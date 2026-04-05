@@ -1,0 +1,82 @@
+/**
+ * thor.gl — Mjolnir for Humans.
+ *
+ * Hand, face, and pose gesture control for deck.gl.
+ * MediaPipe handles detection. Thor handles the bridge to deck.gl.
+ */
+
+// ── Main hook (what most users import) ──
+export { useThor, type ThorConfig, type ThorResult } from "./useThor";
+
+// ── Widget ──
+export { ThorWidget } from "./ThorWidget";
+
+// ── Detection ──
+export {
+  type ThorFrame,
+  type DetectorMode,
+  type BodyPart,
+  type HandLandmarks,
+  type FaceLandmarks,
+  type PoseLandmarks,
+  type Blendshapes,
+  EMPTY_FRAME,
+} from "./detection/types";
+export {
+  initDetector,
+  detect,
+  isReady,
+  getActiveMode,
+  destroyDetector,
+} from "./detection/detector";
+export {
+  HAND,
+  FACE,
+  POSE,
+  FINGERTIPS,
+  distance,
+  distance2d,
+  midpoint,
+  isPinching,
+  pinchCenter,
+  angle,
+} from "./detection/landmarks";
+
+// ── Gesture system ──
+export {
+  type GestureHandler,
+  type GestureDetection,
+  type GestureConfig,
+  type GestureRegistration,
+  type ViewState,
+} from "./gestures/types";
+export {
+  gestureConfig,
+  setGestureConfig,
+  type ThorGestureConfig,
+} from "./gestures/config";
+export {
+  registerGesture,
+  getGesture,
+  listGestures,
+  unregisterGesture,
+  clearRegistry,
+} from "./gestures/registry";
+
+// ── Built-in gesture handlers ──
+export { pinchPan } from "./gestures/hand/pinch-pan";
+export { pinchZoom } from "./gestures/hand/pinch-zoom";
+export { pinchRotate } from "./gestures/hand/pinch-rotate";
+export { pinchPitch } from "./gestures/hand/pinch-pitch";
+export { openPalm } from "./gestures/hand/open-palm";
+export { fist, setFistAction } from "./gestures/hand/fist";
+export { headTilt } from "./gestures/face/head-tilt";
+export { gaze } from "./gestures/face/gaze";
+export { blink } from "./gestures/face/blink";
+export { lean } from "./gestures/pose/lean";
+
+// ── Engine (advanced usage) ──
+export { createEngine, type EngineConfig, type EngineHandle } from "./engine";
+
+// ── Utilities ──
+export { hideCursor, showCursor } from "./util/pointer-emulation";
