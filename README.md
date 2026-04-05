@@ -1,6 +1,8 @@
 # thor.gl
 
-Hand gesture control for [deck.gl](https://deck.gl). MediaPipe detects hands, thor.gl bridges them to viewState.
+[Mjolnir](https://github.com/visgl/mjolnir.js) for Humans. Hand, face, and pose gesture control for [deck.gl](https://deck.gl).
+
+**[Live Demo](https://new-heat.github.io/thor.gl/)** | Built by [NEWHEAT](https://newheat.co)
 
 ## Quick start
 
@@ -126,8 +128,24 @@ Camera  -->  MediaPipe HandLandmarker  -->  ThorFrame
 - **Widget** (`src/ThorWidget.ts`) — deck.gl Widget that renders fingertip dots, pinch cursors, and mode indicators on a mirrored canvas overlay.
 - **Hook** (`src/useThor.ts`) — React hook that wires it all together. Returns a stable `widgets` array for DeckGL.
 
+## Demo
+
+A standalone demo app lives in `demo/`. To run it:
+
+```bash
+cd demo
+npm install
+npm run dev
+```
+
+This starts a Vite dev server with a satellite globe you can control with hand gestures.
+
 ## Peer dependencies
 
 - `@deck.gl/core` >= 9
 - `@mediapipe/tasks-vision`
 - `react` >= 18
+
+## License
+
+MIT
