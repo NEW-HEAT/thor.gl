@@ -797,39 +797,49 @@ function EventLog({ entries }: { entries: LogEntry[] }) {
 
 // ── Gesture info ──
 
+const CHANNEL_NAV = { label: "NAV", color: "#3b82f6" };
+const CHANNEL_PICK = { label: "PICK", color: "#f59e0b" };
+const CHANNEL_SIGNAL = { label: "SIGNAL", color: "#a855f7" };
+
 const GESTURE_INFO: Record<
   string,
-  { desc: string; input: string; effect: string }
+  { desc: string; input: string; effect: string; channel: { label: string; color: string } }
 > = {
   "pinch-pan": {
     desc: "Pan the globe",
-    input: "Pinch + drag with one hand",
-    effect: "Moves longitude/latitude",
+    input: "Pinch + drag (1 hand)",
+    effect: "Moves longitude / latitude",
+    channel: CHANNEL_NAV,
   },
   "pinch-zoom": {
-    desc: "Zoom in/out",
-    input: "Pinch with both hands",
-    effect: "Hands apart = zoom in",
+    desc: "Zoom in / out",
+    input: "Pinch (2 hands) apart / together",
+    effect: "Changes zoom level",
+    channel: CHANNEL_NAV,
   },
   "pinch-rotate": {
-    desc: "Rotate the bearing",
-    input: "Pinch both hands + twist",
-    effect: "Changes map bearing",
+    desc: "Rotate bearing",
+    input: "Pinch (2 hands) + twist",
+    effect: "Rotates the map bearing",
+    channel: CHANNEL_NAV,
   },
   "pinch-pitch": {
     desc: "Tilt the view",
-    input: "Pinch both hands + move up/down",
-    effect: "Changes map pitch",
+    input: "Pinch (2 hands) + up/down",
+    effect: "Changes map pitch / tilt",
+    channel: CHANNEL_NAV,
   },
   "open-palm": {
     desc: "Stop / signal",
-    input: "Show open palm",
-    effect: "Kills inertia, fires signal",
+    input: "Show open palm to camera",
+    effect: "Kills inertia, emits signal event",
+    channel: CHANNEL_SIGNAL,
   },
   fist: {
-    desc: "Toggle globe / mercator",
-    input: "Make a fist (hold 300ms)",
-    effect: "Switches projection (SIGNAL)",
+    desc: "Action trigger",
+    input: "Make a fist, hold 300ms",
+    effect: "Fires action callback (globe toggle)",
+    channel: CHANNEL_SIGNAL,
   },
 };
 
@@ -843,16 +853,21 @@ function GestureIndicators({
   const [state, setState] = useState({
     activeGestures: [] as string[],
     registeredGestures: [] as string[],
+    handCount: 0,
+    confidence: [] as number[],
   });
-  const [hovered, setHovered] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
     let rafId = 0;
     function tick() {
       const engine = getEngine();
+      const frame = engine?.getLatestFrame();
       setState({
         activeGestures: engine?.getActiveGestureNames() ?? [],
         registeredGestures: listGestures(),
+        handCount: frame?.hands.length ?? 0,
+        confidence: frame?.handConfidences ?? [],
       });
       rafId = requestAnimationFrame(tick);
     }
@@ -860,8 +875,7 @@ function GestureIndicators({
     return () => cancelAnimationFrame(rafId);
   }, [getEngine]);
 
-  const { activeGestures, registeredGestures } = state;
-  const info = hovered ? GESTURE_INFO[hovered] : null;
+  const { activeGestures, registeredGestures, handCount, confidence } = state;
 
   return (
     <div
@@ -873,76 +887,136 @@ function GestureIndicators({
         display: "flex",
         flexDirection: "column",
         alignItems: "flex-end",
-        gap: 8,
+        gap: 6,
+        maxWidth: 240,
       }}
     >
+      {/* Live stats bar */}
       <div
         style={{
           display: "flex",
-          flexWrap: "wrap",
-          gap: 4,
-          maxWidth: 192,
-          justifyContent: "flex-end",
+          gap: 8,
+          padding: "4px 8px",
+          borderRadius: 6,
+          background: "rgba(0,0,0,0.5)",
+          backdropFilter: "blur(12px)",
+          fontSize: 9,
+          fontFamily: "monospace",
+          color: "rgba(255,255,255,0.4)",
         }}
       >
-        {registeredGestures.map((name) => {
-          const isActive = activeGestures.includes(name);
-          return (
-            <span
-              key={name}
-              onMouseEnter={() => setHovered(name)}
-              onMouseLeave={() => setHovered(null)}
-              style={{
-                padding: "2px 6px",
-                borderRadius: 4,
-                fontSize: 10,
-                fontFamily: "monospace",
-                cursor: "default",
-                backdropFilter: "blur(12px)",
-                transition: "all 150ms",
-                background: isActive
-                  ? "rgba(245, 158, 11, 0.3)"
-                  : "rgba(0,0,0,0.4)",
-                color: isActive
-                  ? "rgba(253, 230, 138, 1)"
-                  : "rgba(255,255,255,0.4)",
-                border: isActive
-                  ? "1px solid rgba(245,158,11,0.4)"
-                  : "1px solid rgba(255,255,255,0.06)",
-              }}
-            >
-              {name}
+        <span>
+          hands:{" "}
+          <span style={{ color: handCount > 0 ? "#4ade80" : "#ef4444" }}>
+            {handCount}
+          </span>
+        </span>
+        {confidence.length > 0 && (
+          <span>
+            conf:{" "}
+            <span style={{ color: "rgba(255,255,255,0.6)" }}>
+              {confidence.map((c) => `${(c * 100).toFixed(0)}%`).join(" / ")}
             </span>
-          );
-        })}
+          </span>
+        )}
+        <span>
+          active:{" "}
+          <span style={{ color: activeGestures.length > 0 ? "#fbbf24" : "rgba(255,255,255,0.3)" }}>
+            {activeGestures.length}
+          </span>
+        </span>
       </div>
 
-      {info && (
-        <div
-          style={{
-            padding: 8,
-            borderRadius: 8,
-            background: "rgba(0,0,0,0.8)",
-            backdropFilter: "blur(16px)",
-            border: "1px solid rgba(255,255,255,0.08)",
-            fontSize: 11,
-            fontFamily: "monospace",
-            maxWidth: 208,
-          }}
-        >
-          <div style={{ color: "rgba(255,255,255,0.8)", fontWeight: 500 }}>
-            {info.desc}
+      {/* Gesture cards */}
+      {registeredGestures.map((name) => {
+        const isActive = activeGestures.includes(name);
+        const info = GESTURE_INFO[name];
+        const isExpanded = expanded === name;
+
+        return (
+          <div
+            key={name}
+            onClick={() => setExpanded(isExpanded ? null : name)}
+            style={{
+              width: "100%",
+              padding: isExpanded ? "6px 8px" : "3px 8px",
+              borderRadius: 6,
+              fontSize: 10,
+              fontFamily: "monospace",
+              cursor: "pointer",
+              backdropFilter: "blur(12px)",
+              transition: "all 150ms",
+              background: isActive
+                ? "rgba(245, 158, 11, 0.2)"
+                : "rgba(0,0,0,0.5)",
+              border: isActive
+                ? "1px solid rgba(245,158,11,0.4)"
+                : "1px solid rgba(255,255,255,0.06)",
+            }}
+          >
+            {/* Header row */}
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              {/* Active dot */}
+              <span
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: "50%",
+                  background: isActive ? "#fbbf24" : "rgba(255,255,255,0.15)",
+                  boxShadow: isActive ? "0 0 6px #fbbf24" : "none",
+                  flexShrink: 0,
+                }}
+              />
+              {/* Name */}
+              <span
+                style={{
+                  flex: 1,
+                  color: isActive ? "rgba(253, 230, 138, 1)" : "rgba(255,255,255,0.5)",
+                  fontWeight: isActive ? 600 : 400,
+                }}
+              >
+                {name}
+              </span>
+              {/* Channel tag */}
+              {info && (
+                <span
+                  style={{
+                    padding: "1px 4px",
+                    borderRadius: 3,
+                    fontSize: 7,
+                    fontWeight: 700,
+                    letterSpacing: "0.05em",
+                    color: info.channel.color,
+                    background: `${info.channel.color}20`,
+                    border: `1px solid ${info.channel.color}30`,
+                  }}
+                >
+                  {info.channel.label}
+                </span>
+              )}
+            </div>
+
+            {/* Expanded details */}
+            {isExpanded && info && (
+              <div style={{ marginTop: 4, paddingLeft: 11 }}>
+                <div style={{ color: "rgba(255,255,255,0.7)", marginBottom: 2 }}>
+                  {info.desc}
+                </div>
+                <div style={{ color: "rgba(255,255,255,0.35)" }}>
+                  <span style={{ color: "rgba(255,255,255,0.2)" }}>input:</span> {info.input}
+                </div>
+                <div style={{ color: "rgba(255,255,255,0.35)" }}>
+                  <span style={{ color: "rgba(255,255,255,0.2)" }}>output:</span> {info.effect}
+                </div>
+                <div style={{ color: "rgba(255,255,255,0.35)" }}>
+                  <span style={{ color: "rgba(255,255,255,0.2)" }}>channel:</span>{" "}
+                  <span style={{ color: info.channel.color }}>{info.channel.label}</span>
+                </div>
+              </div>
+            )}
           </div>
-          <div style={{ color: "rgba(255,255,255,0.4)", marginTop: 4 }}>
-            <span style={{ color: "rgba(255,255,255,0.25)" }}>how:</span>{" "}
-            {info.input}
-          </div>
-          <div style={{ color: "rgba(255,255,255,0.4)" }}>
-            <span style={{ color: "rgba(255,255,255,0.25)" }}>does:</span>{" "}
-            {info.effect}
-          </div>
-        </div>
-      )}
+        );
+      })}
     </div>
   );
 }
@@ -995,6 +1069,7 @@ function CameraOverlay({
       }
 
       const frame = engine.getLatestFrame();
+      const video = engine.getVideo();
       const ctx = canvas.getContext("2d");
       if (!ctx) {
         rafId = requestAnimationFrame(draw);
@@ -1009,24 +1084,34 @@ function CameraOverlay({
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
-      ctx.fillStyle = "rgba(0,0,0,0.85)";
-      ctx.fillRect(0, 0, W, H);
 
+      // Draw the live camera feed (mirrored)
       ctx.save();
       ctx.translate(W, 0);
       ctx.scale(-1, 1);
 
+      if (video && video.readyState >= 2) {
+        ctx.drawImage(video, 0, 0, W, H);
+      } else {
+        ctx.fillStyle = "rgba(0,0,0,0.9)";
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      // Draw hand skeletons on top of the video
       if (frame) {
         for (let i = 0; i < frame.hands.length; i++) {
           const landmarks = frame.hands[i];
           const color =
             frame.handedness[i] === "Left"
-              ? "rgba(255, 180, 120, 0.8)"
-              : "rgba(120, 180, 255, 0.8)";
+              ? "rgba(255, 180, 120, 0.9)"
+              : "rgba(120, 180, 255, 0.9)";
           if (!landmarks || landmarks.length < 21) continue;
 
+          // Bones
           ctx.strokeStyle = color;
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth = 2;
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 4;
           for (const [a, b] of HAND_CONNECTIONS) {
             const la = landmarks[a];
             const lb = landmarks[b];
@@ -1036,33 +1121,62 @@ function CameraOverlay({
             ctx.lineTo(lb.x * W, lb.y * H);
             ctx.stroke();
           }
+          ctx.shadowBlur = 0;
 
+          // Joints
           for (let j = 0; j < 21; j++) {
             const lm = landmarks[j];
             if (!lm) continue;
             const isTip = (FINGERTIPS as readonly number[]).includes(j);
-            ctx.fillStyle = color;
+            ctx.fillStyle = isTip ? "#fff" : color;
             ctx.beginPath();
-            ctx.arc(lm.x * W, lm.y * H, isTip ? 4 : 2, 0, Math.PI * 2);
+            ctx.arc(lm.x * W, lm.y * H, isTip ? 4 : 2.5, 0, Math.PI * 2);
             ctx.fill();
+            if (isTip) {
+              ctx.strokeStyle = color;
+              ctx.lineWidth = 1;
+              ctx.stroke();
+            }
           }
         }
       }
 
       ctx.restore();
 
-      ctx.font = "500 10px -apple-system, BlinkMacSystemFont, sans-serif";
-      ctx.fillStyle = "rgba(255,255,255,0.5)";
-      ctx.fillText("thor.gl", 8, H - 8);
-
+      // HUD overlay (drawn un-mirrored on top)
+      ctx.font = "bold 10px monospace";
       const count = frame?.hands.length ?? 0;
+      const activeGestures = engine.getActiveGestureNames();
+
+      // Top-left: detection status
       if (count) {
-        ctx.fillStyle = "rgba(0,255,170,0.6)";
-        ctx.fillText(`${count} hand${count > 1 ? "s" : ""}`, 8, 14);
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(4, 4, 80, 16);
+        ctx.fillStyle = "#4ade80";
+        ctx.fillText(`${count} hand${count > 1 ? "s" : ""} tracked`, 8, 15);
       } else {
-        ctx.fillStyle = "rgba(255,100,100,0.6)";
-        ctx.fillText("no detection", 8, 14);
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(4, 4, 76, 16);
+        ctx.fillStyle = "#ef4444";
+        ctx.fillText("no detection", 8, 15);
       }
+
+      // Bottom-left: active gestures
+      if (activeGestures.length > 0) {
+        const text = activeGestures.join(" + ");
+        ctx.fillStyle = "rgba(245, 158, 11, 0.15)";
+        ctx.fillRect(4, H - 20, ctx.measureText(text).width + 8, 16);
+        ctx.fillStyle = "#fbbf24";
+        ctx.font = "bold 9px monospace";
+        ctx.fillText(text, 8, H - 8);
+      }
+
+      // Bottom-right: branding
+      ctx.font = "500 9px monospace";
+      ctx.fillStyle = "rgba(255,255,255,0.3)";
+      ctx.textAlign = "right";
+      ctx.fillText("thor.gl", W - 8, H - 8);
+      ctx.textAlign = "left";
 
       rafId = requestAnimationFrame(draw);
     }
@@ -1079,7 +1193,7 @@ function CameraOverlay({
         zIndex: 50,
         borderRadius: 12,
         overflow: "hidden",
-        border: "1px solid rgba(255,255,255,0.1)",
+        border: "1px solid rgba(255,255,255,0.15)",
         boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
       }}
     >
