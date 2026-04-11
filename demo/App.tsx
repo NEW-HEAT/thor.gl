@@ -99,6 +99,49 @@ export function App() {
   const [selectedCity, setSelectedCity] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [eventLog, setEventLog] = useState<LogEntry[]>([]);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+
+  // Check camera when switching to thor mode
+  useEffect(() => {
+    if (inputMode !== "thor") {
+      setCameraError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    async function checkCamera() {
+      try {
+        // First check if any video input devices exist
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter((d) => d.kind === "videoinput");
+        if (videoInputs.length === 0) {
+          if (!cancelled) setCameraError("No camera detected. Thor requires a webcam for hand tracking.");
+          return;
+        }
+
+        // Then try to actually get access (handles permission denied)
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
+        });
+        // Camera works — release immediately, the engine will request its own
+        stream.getTracks().forEach((t) => t.stop());
+        if (!cancelled) setCameraError(null);
+      } catch (err: any) {
+        if (cancelled) return;
+        if (err.name === "NotFoundError" || err.name === "DevicesNotFoundError") {
+          setCameraError("No camera detected. Thor requires a webcam for hand tracking.");
+        } else if (err.name === "NotAllowedError" || err.name === "PermissionDeniedError") {
+          setCameraError("Camera access denied. Please allow camera permissions and try again.");
+        } else {
+          setCameraError(`Camera error: ${err.message || "Unknown error"}`);
+        }
+      }
+    }
+
+    checkCamera();
+    return () => { cancelled = true; };
+  }, [inputMode]);
 
   // Helpers
   const addToast = useCallback((text: string, color: string) => {
@@ -299,16 +342,83 @@ export function App() {
         }
       />
 
+      {/* Camera error overlay */}
+      {inputMode === "thor" && cameraError && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 100,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(8px)",
+          }}
+        >
+          <div
+            style={{
+              maxWidth: 420,
+              padding: "24px 32px",
+              borderRadius: 16,
+              background: "rgba(20,20,20,0.95)",
+              border: "1px solid rgba(239, 68, 68, 0.3)",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 32, marginBottom: 12 }}>
+              {cameraError.includes("denied") ? "\u{1F6AB}" : "\u{1F4F7}"}
+            </div>
+            <div
+              style={{
+                fontSize: 14,
+                fontWeight: 600,
+                color: "rgba(252, 165, 165, 1)",
+                marginBottom: 8,
+              }}
+            >
+              Camera Required
+            </div>
+            <div
+              style={{
+                fontSize: 12,
+                fontFamily: "monospace",
+                color: "rgba(255,255,255,0.5)",
+                lineHeight: 1.5,
+                marginBottom: 16,
+              }}
+            >
+              {cameraError}
+            </div>
+            <button
+              onClick={() => setInputMode("mjolnir")}
+              style={{
+                padding: "8px 20px",
+                borderRadius: 999,
+                border: "1px solid rgba(255,255,255,0.1)",
+                background: "rgba(255,255,255,0.08)",
+                color: "rgba(255,255,255,0.7)",
+                fontSize: 12,
+                cursor: "pointer",
+                fontFamily: "monospace",
+              }}
+            >
+              switch to Mjolnir mode
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Gesture indicators */}
-      {inputMode === "thor" && <GestureIndicators getEngine={getEngine} />}
+      {inputMode === "thor" && !cameraError && <GestureIndicators getEngine={getEngine} />}
 
       {/* Debug overlay */}
-      {inputMode === "thor" && showDebug && (
+      {inputMode === "thor" && !cameraError && showDebug && (
         <CameraOverlay getEngine={getEngine} />
       )}
 
       {/* Event log */}
-      {inputMode === "thor" && <EventLog entries={eventLog} />}
+      {inputMode === "thor" && !cameraError && <EventLog entries={eventLog} />}
 
       {/* Toasts */}
       <ToastStack toasts={toasts} />
@@ -382,7 +492,7 @@ export function App() {
       </div>
 
       {/* Channel legend + camera indicator */}
-      {inputMode === "thor" && (
+      {inputMode === "thor" && !cameraError && (
         <div
           style={{
             position: "absolute",
