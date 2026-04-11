@@ -39,8 +39,7 @@ import {
 } from "thor.gl";
 
 // ── Register face & pose gestures (not auto-registered) ──
-// gaze, head-tilt, lean are NOT registered — TBD, see issue #3
-registerGesture(blink, { priority: 12, group: "action" });
+// gaze, blink, head-tilt, lean are NOT registered — TBD, see issue #3
 
 type InputMode = "mjolnir" | "thor";
 
@@ -937,6 +936,7 @@ function ToastStack({ toasts }: { toasts: Toast[] }) {
 // ── Event log ──
 
 function EventLog({ entries }: { entries: LogEntry[] }) {
+  const [open, setOpen] = useState(false);
   const CHANNEL_COLORS: Record<string, string> = {
     nav: "#3b82f6",
     pick: "#f59e0b",
@@ -950,8 +950,8 @@ function EventLog({ entries }: { entries: LogEntry[] }) {
         bottom: 80,
         left: 16,
         zIndex: 50,
-        width: 200,
-        maxHeight: 240,
+        width: open ? 200 : "auto",
+        maxHeight: open ? 240 : "auto",
         overflow: "hidden",
         borderRadius: 8,
         background: "rgba(0,0,0,0.6)",
@@ -961,6 +961,7 @@ function EventLog({ entries }: { entries: LogEntry[] }) {
       }}
     >
       <div
+        onClick={() => setOpen((o) => !o)}
         style={{
           padding: "0 8px 4px",
           fontSize: 9,
@@ -968,11 +969,16 @@ function EventLog({ entries }: { entries: LogEntry[] }) {
           color: "rgba(255,255,255,0.25)",
           letterSpacing: "0.1em",
           textTransform: "uppercase",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
         }}
       >
-        event log
+        <span>{open ? "\u25BE" : "\u25B8"}</span>
+        event log{!open && entries.length > 0 ? ` (${entries.length})` : ""}
       </div>
-      {entries.length === 0 && (
+      {open && entries.length === 0 && (
         <div
           style={{
             padding: "8px",
@@ -985,7 +991,8 @@ function EventLog({ entries }: { entries: LogEntry[] }) {
           waiting for gestures...
         </div>
       )}
-      {entries.slice(0, 15).map((e) => (
+      {!open && null}
+      {open && entries.slice(0, 15).map((e) => (
         <div
           key={e.id}
           style={{
@@ -1128,7 +1135,7 @@ function GestureIndicators({
   });
   const [expanded, setExpanded] = useState<string | null>(null);
   const [disabledGestures, setDisabledGestures] = useState<Set<string>>(
-    new Set(["head-tilt", "lean", "gaze"]) // TBD — not registered at startup
+    new Set(["head-tilt", "lean", "gaze", "blink"]) // TBD — not registered at startup
   );
 
   useEffect(() => {
