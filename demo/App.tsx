@@ -34,8 +34,7 @@ import {
 // ── Register face & pose gestures (not auto-registered) ──
 registerGesture(gaze, { priority: 10, group: "gaze" });
 registerGesture(blink, { priority: 12, group: "action" });
-registerGesture(headTilt, { priority: 15, group: "navigation" });
-registerGesture(lean, { priority: 14, group: "navigation" });
+// head-tilt and lean are NOT registered — TBD, too flakey for nav currently
 
 type InputMode = "mjolnir" | "thor";
 
@@ -263,7 +262,7 @@ export function App() {
       for (const g of active) {
         if (!prev.has(g)) {
           // Navigation
-          if (["pinch-pan", "pinch-zoom", "pinch-rotate", "pinch-pitch", "head-tilt", "lean"].includes(g)) {
+          if (["pinch-pan", "pinch-zoom", "pinch-rotate", "pinch-pitch"].includes(g)) {
             addLog(g, "nav");
           }
           // Gaze
@@ -1034,15 +1033,15 @@ const GESTURE_INFO: Record<
     channel: CHANNEL_SIGNAL,
   },
   "head-tilt": {
-    desc: "Head rotation (experimental)",
+    desc: "Head rotation (TBD)",
     input: "Turn or tilt your head",
-    effect: "Adjusts bearing and pitch — can be flakey",
+    effect: "Not yet wired — needs tuning for reliable nav",
     channel: CHANNEL_NAV,
   },
   lean: {
-    desc: "Body lean panning (experimental)",
+    desc: "Body lean panning (TBD)",
     input: "Lean left/right/forward/back",
-    effect: "Pans map via shoulder offset — can be flakey",
+    effect: "Not yet wired — needs tuning for reliable nav",
     channel: CHANNEL_NAV,
   },
 };
