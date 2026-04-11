@@ -5,7 +5,10 @@
  * MediaPipe handles detection. Thor handles the bridge to deck.gl.
  */
 
-// ── Main hook (what most users import) ──
+// ── Framework-agnostic class ──
+export { Thor, type ThorOptions } from "./thor";
+
+// ── React hook ──
 export { useThor, type ThorConfig, type ThorResult } from "./useThor";
 
 // ── Widget ──
