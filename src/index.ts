@@ -5,8 +5,27 @@
  * MediaPipe handles detection. Thor handles the bridge to deck.gl.
  */
 
-// ── Main hook (what most users import) ──
+// ── Framework-agnostic class ──
+export { Thor, type ThorOptions, type DeckInstance } from "./thor";
+
+// ── React hook ──
 export { useThor, type ThorConfig, type ThorResult } from "./useThor";
+
+// ── Emit layer (output channels) ──
+export {
+  createNavigationEmitter,
+  type NavigationEmitter,
+  type EventManagerLike,
+  type GesturePhase,
+  createPickingEmitter,
+  type PickingEmitter,
+  type PickingResult,
+  type ThorPickingEvent,
+  SignalEmitter,
+  SIGNAL_EVENTS,
+  type ThorSignalEvent,
+  type SignalEventType,
+} from "./emit";
 
 // ── Widget ──
 export { ThorWidget } from "./ThorWidget";
@@ -71,7 +90,18 @@ export { pinchPitch } from "./gestures/hand/pinch-pitch";
 export { openPalm } from "./gestures/hand/open-palm";
 export { fist, setFistAction } from "./gestures/hand/fist";
 export { headTilt } from "./gestures/face/head-tilt";
-export { gaze } from "./gestures/face/gaze";
+export { gaze, setGazeCalibration, getGazeCalibration, getLastGazePoint } from "./gestures/face/gaze";
+export {
+  estimateGaze,
+  extractIrisPosition,
+  extractHeadPose,
+  fitCalibration,
+  type GazePoint,
+  type CalibrationData,
+  type CalibrationPoint,
+  type IrisPosition,
+  type HeadPose,
+} from "./gestures/face/gaze-model";
 export { blink } from "./gestures/face/blink";
 export { lean } from "./gestures/pose/lean";
 

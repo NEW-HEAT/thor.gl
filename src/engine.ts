@@ -35,6 +35,8 @@ export interface EngineHandle {
   getLatestFrame(): ThorFrame;
   /** Get currently active gesture names */
   getActiveGestureNames(): string[];
+  /** Get the hidden video element (for debug overlays) */
+  getVideo(): HTMLVideoElement | null;
 }
 
 export function createEngine(config: EngineConfig): EngineHandle {
@@ -258,6 +260,10 @@ export function createEngine(config: EngineConfig): EngineHandle {
 
     getActiveGestureNames() {
       return activeGestureNames;
+    },
+
+    getVideo() {
+      return video;
     },
   };
 }
