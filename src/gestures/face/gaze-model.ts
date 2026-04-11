@@ -4,222 +4,205 @@
  * Computes where on-screen the user is looking using:
  *   1. Iris-in-eye position (iris center relative to eye contour)
  *   2. Head pose estimation (yaw/pitch from face landmarks)
- *   3. Calibrated polynomial mapping (iris coords → screen coords)
+ *   3. Optional calibrated polynomial mapping
  *
- * Without calibration, falls back to a geometric model assuming a
- * standard laptop with integrated webcam.
- *
- * All coordinates are normalized 0-1 (top-left origin for screen).
+ * Key insight: VERTICAL gaze on a laptop is driven primarily by head
+ * pitch (you tilt your head to look at different screen heights).
+ * Iris vertical movement within the eye is tiny and noisy.
+ * HORIZONTAL gaze uses both head yaw and iris-in-eye position.
  */
 
 import type { FaceLandmarks } from "../../detection/types";
 
-// ── Eye contour landmark indices (MediaPipe face mesh 478-point model) ──
+// ── Eye contour landmark indices (MediaPipe 478-point face mesh) ──
+// Using multiple points per edge for a more stable bounding box
 
-/** Left eye contour — key points for bounding box */
 const LEFT_EYE = {
-  OUTER: 33,    // outer corner (toward ear)
-  INNER: 133,   // inner corner (toward nose)
-  TOP: 159,     // upper eyelid peak
-  BOTTOM: 145,  // lower eyelid valley
-  IRIS: 468,    // iris center
+  // Horizontal bounds — multiple points averaged for stability
+  OUTER_POINTS: [33, 246, 161],  // outer corner region
+  INNER_POINTS: [133, 173, 157], // inner corner region
+  // Vertical: use the bony orbit (more stable than eyelid)
+  TOP_ORBIT: [27, 28, 56],       // brow bone — doesn't move with blinks
+  BOTTOM_ORBIT: [110, 111, 117], // cheekbone — stable reference
+  IRIS: 468,
 };
 
-/** Right eye contour */
 const RIGHT_EYE = {
-  OUTER: 263,
-  INNER: 362,
-  TOP: 386,
-  BOTTOM: 374,
+  OUTER_POINTS: [263, 466, 388],
+  INNER_POINTS: [362, 398, 384],
+  TOP_ORBIT: [257, 258, 286],
+  BOTTOM_ORBIT: [339, 340, 346],
   IRIS: 473,
 };
 
-/** Face landmarks for head pose */
 const HEAD_POSE = {
   NOSE_TIP: 1,
   FOREHEAD: 10,
   CHIN: 152,
   LEFT_EYE_OUTER: 33,
   RIGHT_EYE_OUTER: 263,
-  MOUTH_LEFT: 61,
-  MOUTH_RIGHT: 291,
+  LEFT_CHEEK: 234,
+  RIGHT_CHEEK: 454,
 };
 
 // ── Types ──
 
 export interface GazePoint {
-  /** Screen X coordinate, 0 (left) to 1 (right) */
   x: number;
-  /** Screen Y coordinate, 0 (top) to 1 (bottom) */
   y: number;
-  /** Confidence in this estimate (0-1) */
   confidence: number;
 }
 
 export interface IrisPosition {
-  /** Left iris position within left eye (0=outer corner, 1=inner corner) */
   leftX: number;
-  /** Left iris vertical position (0=top, 1=bottom) */
   leftY: number;
-  /** Right iris position within right eye (0=inner corner, 1=outer corner) */
   rightX: number;
-  /** Right iris vertical position */
   rightY: number;
 }
 
 export interface HeadPose {
-  /** Yaw: negative = turned left, positive = turned right */
+  /** Yaw: negative = turned left, positive = turned right. Range roughly -0.5 to 0.5 */
   yaw: number;
-  /** Pitch: negative = looking down, positive = looking up */
+  /** Pitch: negative = looking down, positive = looking up. Range roughly -0.3 to 0.3 */
   pitch: number;
-  /** Roll: head tilt (not used for gaze, but available) */
   roll: number;
+  /** Raw vertical position of face in frame (0-1). Used for vertical gaze estimation. */
+  faceY: number;
 }
 
 export interface CalibrationPoint {
-  /** Screen position of the calibration dot (0-1) */
   screenX: number;
   screenY: number;
-  /** Measured iris position when looking at the dot */
   irisX: number;
   irisY: number;
-  /** Head pose at calibration time */
   headYaw: number;
   headPitch: number;
+  faceY: number;
 }
 
 export interface CalibrationData {
   points: CalibrationPoint[];
-  /** Polynomial coefficients for X mapping: ax*ix + bx*iy + cx*ix*iy + dx*ix^2 + ex*iy^2 + fx */
   coeffsX: number[];
-  /** Polynomial coefficients for Y mapping */
   coeffsY: number[];
-  /** Timestamp when calibration was performed */
+  /** Per-feature mean for normalization */
+  featureMeans: number[];
+  /** Per-feature stddev for normalization */
+  featureStds: number[];
   timestamp: number;
+}
+
+// ── Helpers ──
+
+function avgLandmarks(face: FaceLandmarks, indices: number[], axis: "x" | "y"): number {
+  let sum = 0;
+  let count = 0;
+  for (const idx of indices) {
+    const lm = face[idx];
+    if (lm) { sum += lm[axis]; count++; }
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
 }
 
 // ── Iris-in-eye extraction ──
 
-/**
- * Extract normalized iris position within the eye contour.
- * This is the core signal — where the iris sits relative to the eye socket.
- *
- * Returns values in [0, 1] where:
- * - X: 0 = looking left, 0.5 = center, 1 = looking right (from user's perspective)
- * - Y: 0 = looking up, 0.5 = center, 1 = looking down
- */
 export function extractIrisPosition(face: FaceLandmarks): IrisPosition | null {
-  const le = LEFT_EYE;
-  const re = RIGHT_EYE;
+  const lIris = face[LEFT_EYE.IRIS];
+  const rIris = face[RIGHT_EYE.IRIS];
+  if (!lIris || !rIris) return null;
 
-  const lOuter = face[le.OUTER];
-  const lInner = face[le.INNER];
-  const lTop = face[le.TOP];
-  const lBottom = face[le.BOTTOM];
-  const lIris = face[le.IRIS];
+  // Left eye — use averaged multi-point bounds for stability
+  const lLeft = avgLandmarks(face, LEFT_EYE.OUTER_POINTS, "x");
+  const lRight = avgLandmarks(face, LEFT_EYE.INNER_POINTS, "x");
+  const lTop = avgLandmarks(face, LEFT_EYE.TOP_ORBIT, "y");
+  const lBottom = avgLandmarks(face, LEFT_EYE.BOTTOM_ORBIT, "y");
 
-  const rOuter = face[re.OUTER];
-  const rInner = face[re.INNER];
-  const rTop = face[re.TOP];
-  const rBottom = face[re.BOTTOM];
-  const rIris = face[re.IRIS];
+  const lWidth = lRight - lLeft;
+  const lHeight = lBottom - lTop;
+  if (lWidth < 0.005 || lHeight < 0.005) return null;
 
-  if (!lOuter || !lInner || !lTop || !lBottom || !lIris) return null;
-  if (!rOuter || !rInner || !rTop || !rBottom || !rIris) return null;
+  const leftX = (lIris.x - lLeft) / lWidth;
+  const leftY = (lIris.y - lTop) / lHeight;
 
-  // Left eye: normalize iris within eye bounding box
-  const lWidth = lInner.x - lOuter.x;
-  const lHeight = lBottom.y - lTop.y;
-  if (lWidth < 0.005 || lHeight < 0.003) return null;
+  // Right eye
+  const rLeft = avgLandmarks(face, RIGHT_EYE.INNER_POINTS, "x");
+  const rRight = avgLandmarks(face, RIGHT_EYE.OUTER_POINTS, "x");
+  const rTop = avgLandmarks(face, RIGHT_EYE.TOP_ORBIT, "y");
+  const rBottom = avgLandmarks(face, RIGHT_EYE.BOTTOM_ORBIT, "y");
 
-  const leftX = (lIris.x - lOuter.x) / lWidth;
-  const leftY = (lIris.y - lTop.y) / lHeight;
+  const rWidth = rRight - rLeft;
+  const rHeight = rBottom - rTop;
+  if (rWidth < 0.005 || rHeight < 0.005) return null;
 
-  // Right eye: normalize iris within eye bounding box
-  const rWidth = rOuter.x - rInner.x;
-  const rHeight = rBottom.y - rTop.y;
-  if (rWidth < 0.005 || rHeight < 0.003) return null;
-
-  const rightX = (rIris.x - rInner.x) / rWidth;
-  const rightY = (rIris.y - rTop.y) / rHeight;
+  const rightX = (rIris.x - rLeft) / rWidth;
+  const rightY = (rIris.y - rTop) / rHeight;
 
   return { leftX, leftY, rightX, rightY };
 }
 
 // ── Head pose estimation ──
 
-/**
- * Estimate head yaw, pitch, roll from face landmarks.
- * Uses a simple geometric approach (not full PnP).
- */
 export function extractHeadPose(face: FaceLandmarks): HeadPose | null {
   const nose = face[HEAD_POSE.NOSE_TIP];
   const forehead = face[HEAD_POSE.FOREHEAD];
   const chin = face[HEAD_POSE.CHIN];
   const eyeL = face[HEAD_POSE.LEFT_EYE_OUTER];
   const eyeR = face[HEAD_POSE.RIGHT_EYE_OUTER];
-  const mouthL = face[HEAD_POSE.MOUTH_LEFT];
-  const mouthR = face[HEAD_POSE.MOUTH_RIGHT];
 
-  if (!nose || !forehead || !chin || !eyeL || !eyeR || !mouthL || !mouthR) return null;
+  if (!nose || !forehead || !chin || !eyeL || !eyeR) return null;
 
-  // Yaw: asymmetry in eye-to-nose distances
   const eyeMidX = (eyeL.x + eyeR.x) / 2;
   const eyeWidth = eyeR.x - eyeL.x;
   if (eyeWidth < 0.01) return null;
-  const yaw = (nose.x - eyeMidX) / eyeWidth; // -1 to 1 roughly
 
-  // Pitch: nose position along forehead-chin axis
+  // Yaw: nose offset from eye midpoint, normalized by eye width
+  const yaw = (nose.x - eyeMidX) / eyeWidth;
+
+  // Pitch: use nose-to-forehead vs nose-to-chin ratio
+  // When looking down, nose appears closer to chin. When looking up, closer to forehead.
+  const noseToForehead = nose.y - forehead.y;
+  const noseToChin = chin.y - nose.y;
   const faceHeight = chin.y - forehead.y;
   if (faceHeight < 0.02) return null;
-  const noseRatio = (nose.y - forehead.y) / faceHeight;
-  const pitch = (0.38 - noseRatio) * 2; // 0.38 is roughly neutral, positive = looking up
 
-  // Roll: angle of the eye line
+  // Ratio of upper face to total face — ~0.38 is neutral
+  const upperRatio = noseToForehead / faceHeight;
+  const pitch = (0.38 - upperRatio) * 3.0; // Amplified — this is our primary vertical signal
+
+  // Roll
   const roll = Math.atan2(eyeR.y - eyeL.y, eyeR.x - eyeL.x);
 
-  return { yaw, pitch, roll };
+  // Raw face Y position in camera frame (for vertical gaze backup signal)
+  const faceY = (forehead.y + chin.y) / 2;
+
+  return { yaw, pitch, roll, faceY };
 }
 
-// ── Uncalibrated gaze estimation ──
+// ── Uncalibrated gaze ──
 
-/**
- * Estimate gaze point WITHOUT calibration.
- *
- * Uses a geometric model assuming:
- * - Standard laptop, camera at top-center of screen
- * - User ~50-70cm from screen
- * - Screen subtends ~35 degrees horizontal FOV
- *
- * This is approximate but much better than raw iris midpoint.
- */
 export function estimateGazeUncalibrated(
   iris: IrisPosition,
   headPose: HeadPose
 ): GazePoint {
-  // Average left and right eye iris positions
   const irisX = (iris.leftX + iris.rightX) / 2;
   const irisY = (iris.leftY + iris.rightY) / 2;
 
-  // Iris center in eye is roughly 0.5, 0.5
-  // Deviation from center = gaze direction relative to head
-  const eyeDeviationX = (irisX - 0.5) * 2; // -1 to 1
-  const eyeDeviationY = (irisY - 0.5) * 2; // -1 to 1
+  // HORIZONTAL: head yaw is primary, iris X adds precision
+  const eyeDevX = (irisX - 0.5) * 2;
+  const gazeX = 0.5 + headPose.yaw * 1.8 + eyeDevX * 1.0;
 
-  // Combine head rotation and eye-in-head rotation
-  // Head yaw contributes to horizontal gaze, eye deviation adds the fine component
-  // Scale factors tuned for typical laptop geometry
-  const HEAD_YAW_WEIGHT = 1.2;
-  const HEAD_PITCH_WEIGHT = 0.8;
-  const EYE_X_WEIGHT = 0.7;
-  const EYE_Y_WEIGHT = 0.5;
+  // VERTICAL: head pitch is PRIMARY signal (amplified 3x in extraction).
+  // Face Y position in frame is a strong secondary signal.
+  // Iris Y contributes minimally — it's too noisy.
+  const faceYOffset = (headPose.faceY - 0.45) * 1.5; // 0.45 is roughly centered
+  const eyeDevY = (irisY - 0.5) * 2;
+  const gazeY = 0.5 - headPose.pitch * 1.4 + faceYOffset * 0.4 + eyeDevY * 0.15;
 
-  const gazeX = 0.5 + headPose.yaw * HEAD_YAW_WEIGHT + eyeDeviationX * EYE_X_WEIGHT;
-  const gazeY = 0.5 - headPose.pitch * HEAD_PITCH_WEIGHT + eyeDeviationY * EYE_Y_WEIGHT;
-
-  // Confidence based on agreement between left and right eyes
-  const eyeAgreement = 1 - Math.abs(iris.leftX - iris.rightX) * 2;
-  const confidence = Math.max(0, Math.min(1, eyeAgreement * 0.8 + 0.2));
+  const eyeAgreement = 1 - Math.abs(iris.leftX - iris.rightX) * 3;
+  const confidence = clamp(eyeAgreement * 0.7 + 0.3, 0, 1);
 
   return {
     x: clamp(gazeX, 0, 1),
@@ -228,27 +211,21 @@ export function estimateGazeUncalibrated(
   };
 }
 
-// ── Calibrated gaze estimation ──
+// ── Calibrated gaze ──
 
-/**
- * Estimate gaze point WITH calibration data.
- *
- * Uses a 2nd-order polynomial fitted from calibration points.
- * Input features: average iris X/Y + head yaw/pitch.
- */
 export function estimateGazeCalibrated(
   iris: IrisPosition,
   headPose: HeadPose,
   calibration: CalibrationData
 ): GazePoint {
-  const irisX = (iris.leftX + iris.rightX) / 2;
-  const irisY = (iris.leftY + iris.rightY) / 2;
+  const raw = buildRawFeatures(iris, headPose);
+  const normalized = normalizeFeatures(raw, calibration.featureMeans, calibration.featureStds);
 
-  const gazeX = evalPolynomial(calibration.coeffsX, irisX, irisY, headPose.yaw, headPose.pitch);
-  const gazeY = evalPolynomial(calibration.coeffsY, irisX, irisY, headPose.yaw, headPose.pitch);
+  const gazeX = evalPolynomial(calibration.coeffsX, normalized);
+  const gazeY = evalPolynomial(calibration.coeffsY, normalized);
 
-  const eyeAgreement = 1 - Math.abs(iris.leftX - iris.rightX) * 2;
-  const confidence = Math.max(0, Math.min(1, eyeAgreement * 0.9 + 0.1));
+  const eyeAgreement = 1 - Math.abs(iris.leftX - iris.rightX) * 3;
+  const confidence = clamp(eyeAgreement * 0.8 + 0.2, 0, 1);
 
   return {
     x: clamp(gazeX, 0, 1),
@@ -259,25 +236,40 @@ export function estimateGazeCalibrated(
 
 // ── Calibration fitting ──
 
-/**
- * Fit calibration data to produce polynomial coefficients.
- *
- * Uses least-squares regression on the feature vector:
- * [irisX, irisY, headYaw, headPitch, irisX*irisY, irisX^2, irisY^2, 1]
- *
- * Needs at least 4 calibration points (8 recommended for good fit).
- */
 export function fitCalibration(points: CalibrationPoint[]): CalibrationData {
-  if (points.length < 4) {
-    throw new Error("Need at least 4 calibration points");
+  if (points.length < 4) throw new Error("Need at least 4 calibration points");
+
+  // Build raw feature vectors
+  const rawFeatures = points.map((p) => [
+    p.irisX, p.irisY, p.headYaw, p.headPitch, p.faceY,
+  ]);
+
+  // Compute per-feature mean and stddev for normalization
+  const nFeatures = rawFeatures[0].length;
+  const means = new Array(nFeatures).fill(0);
+  const stds = new Array(nFeatures).fill(0);
+
+  for (const f of rawFeatures) {
+    for (let i = 0; i < nFeatures; i++) means[i] += f[i];
+  }
+  for (let i = 0; i < nFeatures; i++) means[i] /= rawFeatures.length;
+
+  for (const f of rawFeatures) {
+    for (let i = 0; i < nFeatures; i++) stds[i] += (f[i] - means[i]) ** 2;
+  }
+  for (let i = 0; i < nFeatures; i++) {
+    stds[i] = Math.sqrt(stds[i] / rawFeatures.length) || 1; // avoid div by zero
   }
 
-  // Build feature matrix and target vectors
-  const features = points.map((p) => buildFeatures(p.irisX, p.irisY, p.headYaw, p.headPitch));
+  // Normalize and build polynomial features
+  const features = rawFeatures.map((f) => {
+    const n = f.map((v, i) => (v - means[i]) / stds[i]);
+    return expandFeatures(n);
+  });
+
   const targetX = points.map((p) => p.screenX);
   const targetY = points.map((p) => p.screenY);
 
-  // Solve via normal equations: coeffs = (F^T F)^-1 F^T target
   const coeffsX = leastSquares(features, targetX);
   const coeffsY = leastSquares(features, targetY);
 
@@ -285,18 +277,14 @@ export function fitCalibration(points: CalibrationPoint[]): CalibrationData {
     points,
     coeffsX,
     coeffsY,
+    featureMeans: means,
+    featureStds: stds,
     timestamp: Date.now(),
   };
 }
 
 // ── Combined estimator ──
 
-/**
- * Full gaze estimation pipeline.
- *
- * Extracts iris position + head pose, then applies calibrated or
- * uncalibrated model. Returns null if face data is insufficient.
- */
 export function estimateGaze(
   face: FaceLandmarks,
   calibration: CalibrationData | null
@@ -316,33 +304,42 @@ export function estimateGaze(
   return estimateGazeUncalibrated(iris, headPose);
 }
 
-// ── Math utilities ──
+// ── Math internals ──
 
-function clamp(v: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, v));
+function buildRawFeatures(iris: IrisPosition, headPose: HeadPose): number[] {
+  const irisX = (iris.leftX + iris.rightX) / 2;
+  const irisY = (iris.leftY + iris.rightY) / 2;
+  return [irisX, irisY, headPose.yaw, headPose.pitch, headPose.faceY];
 }
 
-/** Build polynomial feature vector from inputs */
-function buildFeatures(ix: number, iy: number, hw: number, hp: number): number[] {
-  return [ix, iy, hw, hp, ix * iy, ix * ix, iy * iy, 1];
+function normalizeFeatures(raw: number[], means: number[], stds: number[]): number[] {
+  return raw.map((v, i) => (v - means[i]) / stds[i]);
 }
 
-/** Evaluate polynomial: coeffs . features */
-function evalPolynomial(coeffs: number[], ix: number, iy: number, hw: number, hp: number): number {
-  const f = buildFeatures(ix, iy, hw, hp);
+/** Expand normalized features into polynomial basis */
+function expandFeatures(n: number[]): number[] {
+  const [ix, iy, hw, hp, fy] = n;
+  return [
+    ix, iy, hw, hp, fy,           // linear
+    ix * ix, iy * iy, hw * hw, hp * hp, // quadratic
+    ix * iy, ix * hw, iy * hp,     // cross terms
+    1,                              // bias
+  ];
+}
+
+function evalPolynomial(coeffs: number[], features: number[]): number {
+  const expanded = expandFeatures(features);
   let sum = 0;
-  for (let i = 0; i < Math.min(coeffs.length, f.length); i++) {
-    sum += coeffs[i] * f[i];
+  for (let i = 0; i < Math.min(coeffs.length, expanded.length); i++) {
+    sum += coeffs[i] * expanded[i];
   }
   return sum;
 }
 
-/** Least squares solve: (F^T F)^-1 F^T y */
 function leastSquares(features: number[][], targets: number[]): number[] {
   const n = features.length;
   const m = features[0].length;
 
-  // F^T F (m x m)
   const FtF: number[][] = Array.from({ length: m }, () => new Array(m).fill(0));
   for (let i = 0; i < m; i++) {
     for (let j = 0; j < m; j++) {
@@ -352,7 +349,6 @@ function leastSquares(features: number[][], targets: number[]): number[] {
     }
   }
 
-  // F^T y (m x 1)
   const FtY: number[] = new Array(m).fill(0);
   for (let i = 0; i < m; i++) {
     let sum = 0;
@@ -360,22 +356,17 @@ function leastSquares(features: number[][], targets: number[]): number[] {
     FtY[i] = sum;
   }
 
-  // Add small ridge for numerical stability
-  for (let i = 0; i < m; i++) FtF[i][i] += 1e-6;
+  // Ridge regularization — stronger to prevent overfitting with few points
+  for (let i = 0; i < m; i++) FtF[i][i] += 0.01;
 
-  // Solve FtF * coeffs = FtY via Gaussian elimination
   return solveLinear(FtF, FtY);
 }
 
-/** Solve Ax = b via Gaussian elimination with partial pivoting */
 function solveLinear(A: number[][], b: number[]): number[] {
   const n = A.length;
-  // Augmented matrix
   const aug = A.map((row, i) => [...row, b[i]]);
 
-  // Forward elimination
   for (let col = 0; col < n; col++) {
-    // Partial pivoting
     let maxRow = col;
     let maxVal = Math.abs(aug[col][col]);
     for (let row = col + 1; row < n; row++) {
@@ -384,31 +375,23 @@ function solveLinear(A: number[][], b: number[]): number[] {
         maxRow = row;
       }
     }
-    if (maxRow !== col) {
-      [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
-    }
+    if (maxRow !== col) [aug[col], aug[maxRow]] = [aug[maxRow], aug[col]];
 
     const pivot = aug[col][col];
     if (Math.abs(pivot) < 1e-12) continue;
 
     for (let row = col + 1; row < n; row++) {
       const factor = aug[row][col] / pivot;
-      for (let j = col; j <= n; j++) {
-        aug[row][j] -= factor * aug[col][j];
-      }
+      for (let j = col; j <= n; j++) aug[row][j] -= factor * aug[col][j];
     }
   }
 
-  // Back substitution
   const x = new Array(n).fill(0);
   for (let row = n - 1; row >= 0; row--) {
     let sum = aug[row][n];
-    for (let col = row + 1; col < n; col++) {
-      sum -= aug[row][col] * x[col];
-    }
+    for (let col = row + 1; col < n; col++) sum -= aug[row][col] * x[col];
     const diag = aug[row][row];
     x[row] = Math.abs(diag) > 1e-12 ? sum / diag : 0;
   }
-
   return x;
 }

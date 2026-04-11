@@ -4,7 +4,7 @@
  * Uses the gaze model to estimate where on-screen the user is looking.
  * Supports both uncalibrated (geometric) and calibrated (polynomial) modes.
  *
- * Does NOT modify viewState — emits gaze position for picking/hover.
+ * Does NOT modify viewState — emits gaze position for picking/hover only.
  */
 
 import type { GestureHandler, GestureDetection, ViewState, GestureConfig } from "../types";
@@ -18,25 +18,34 @@ import {
 /** Current calibration data — set via setGazeCalibration() */
 let calibration: CalibrationData | null = null;
 
-/** Last estimated gaze point (accessible for external consumers) */
+/** Last estimated gaze point */
 let lastGazePoint: GazePoint | null = null;
 
-/** Smoothing buffer for temporal filtering */
-const SMOOTH_BUFFER: GazePoint[] = [];
-const SMOOTH_WINDOW = 5;
+/** Exponential moving average state */
+let smoothX = 0.5;
+let smoothY = 0.5;
 
-function smooth(point: GazePoint): GazePoint {
-  SMOOTH_BUFFER.push(point);
-  if (SMOOTH_BUFFER.length > SMOOTH_WINDOW) SMOOTH_BUFFER.shift();
+/**
+ * Adaptive EMA — responsive to large movements, stable when still.
+ * alpha = base smoothing factor (0 = no smoothing, 1 = freeze)
+ * When velocity is high, alpha drops for responsiveness.
+ */
+function adaptiveSmooth(raw: GazePoint): GazePoint {
+  const dx = raw.x - smoothX;
+  const dy = raw.y - smoothY;
+  const velocity = Math.sqrt(dx * dx + dy * dy);
 
-  let sx = 0, sy = 0, sc = 0;
-  for (const p of SMOOTH_BUFFER) {
-    sx += p.x;
-    sy += p.y;
-    sc += p.confidence;
-  }
-  const n = SMOOTH_BUFFER.length;
-  return { x: sx / n, y: sy / n, confidence: sc / n };
+  // High velocity → alpha ~0.15 (responsive). Low velocity → alpha ~0.6 (stable).
+  const alpha = clamp(0.6 - velocity * 4, 0.12, 0.65);
+
+  smoothX = smoothX * alpha + raw.x * (1 - alpha);
+  smoothY = smoothY * alpha + raw.y * (1 - alpha);
+
+  return { x: smoothX, y: smoothY, confidence: raw.confidence };
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
 }
 
 export const gaze: GestureHandler = {
@@ -49,7 +58,7 @@ export const gaze: GestureHandler = {
     const raw = estimateGaze(frame.face, calibration);
     if (!raw) return null;
 
-    const point = smooth(raw);
+    const point = adaptiveSmooth(raw);
     lastGazePoint = point;
 
     return {
@@ -64,28 +73,26 @@ export const gaze: GestureHandler = {
   },
 
   apply(_detection, viewState, _config): ViewState {
-    // Gaze NEVER modifies viewState — it's a picking/hover signal only
     return viewState;
   },
 
   reset() {
-    SMOOTH_BUFFER.length = 0;
+    smoothX = 0.5;
+    smoothY = 0.5;
     lastGazePoint = null;
   },
 };
 
-/** Set calibration data for the gaze estimator */
 export function setGazeCalibration(data: CalibrationData | null): void {
   calibration = data;
-  SMOOTH_BUFFER.length = 0;
+  smoothX = 0.5;
+  smoothY = 0.5;
 }
 
-/** Get the current calibration data */
 export function getGazeCalibration(): CalibrationData | null {
   return calibration;
 }
 
-/** Get the last estimated gaze point */
 export function getLastGazePoint(): GazePoint | null {
   return lastGazePoint;
 }

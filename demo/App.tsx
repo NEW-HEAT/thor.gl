@@ -236,13 +236,19 @@ export function App() {
         const headPose = extractHeadPose(frame.face);
 
         if (iris && headPose) {
-          // Combine head rotation + iris-in-eye position for screen gaze
+          // Use the same model as the gesture handler
           const irisX = (iris.leftX + iris.rightX) / 2;
+          const eyeDevX = (irisX - 0.5) * 2;
           const irisY = (iris.leftY + iris.rightY) / 2;
+          const eyeDevY = (irisY - 0.5) * 2;
+          const faceYOffset = (headPose.faceY - 0.45) * 1.5;
+
+          // Horizontal: head yaw primary + iris X
           const gazeX = Math.max(0, Math.min(1,
-            0.5 + headPose.yaw * 1.2 + (irisX - 0.5) * 1.4));
+            0.5 + headPose.yaw * 1.8 + eyeDevX * 1.0));
+          // Vertical: head pitch primary + faceY + minimal iris Y
           const gazeY = Math.max(0, Math.min(1,
-            0.5 - headPose.pitch * 0.8 + (irisY - 0.5) * 1.0));
+            0.5 - headPose.pitch * 1.4 + faceYOffset * 0.4 + eyeDevY * 0.15));
 
           setGazePos({ x: gazeX, y: gazeY });
 
@@ -1384,7 +1390,7 @@ function CalibrationOverlay({
         if (iris && head) {
           const irisX = (iris.leftX + iris.rightX) / 2;
           const irisY = (iris.leftY + iris.rightY) / 2;
-          collectBuffer.current.push({ irisX, irisY, headYaw: head.yaw, headPitch: head.pitch });
+          collectBuffer.current.push({ irisX, irisY, headYaw: head.yaw, headPitch: head.pitch, faceY: head.faceY });
 
           if (collectBuffer.current.length >= SAMPLES_PER_DOT) {
             // Average the samples
@@ -1394,6 +1400,7 @@ function CalibrationOverlay({
               irisY: buf.reduce((s, b) => s + b.irisY, 0) / buf.length,
               headYaw: buf.reduce((s, b) => s + b.headYaw, 0) / buf.length,
               headPitch: buf.reduce((s, b) => s + b.headPitch, 0) / buf.length,
+              faceY: buf.reduce((s, b) => s + b.faceY, 0) / buf.length,
             };
 
             const dot = CALIBRATION_DOTS[currentDot];
