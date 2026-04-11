@@ -17,6 +17,8 @@ import {
   setFistAction,
   listGestures,
   registerGesture,
+  unregisterGesture,
+  getGesture,
   headTilt,
   gaze,
   blink,
@@ -1020,9 +1022,9 @@ const GESTURE_INFO: Record<
     channel: CHANNEL_SIGNAL,
   },
   gaze: {
-    desc: "Eye tracking cursor",
-    input: "Look at the screen (iris tracking)",
-    effect: "Blue gaze cursor follows your eyes",
+    desc: "Eye tracking cursor (experimental)",
+    input: "Look at screen (iris position)",
+    effect: "Blue cursor tracks gaze — assumes laptop webcam",
     channel: CHANNEL_PICK,
   },
   blink: {
@@ -1032,20 +1034,34 @@ const GESTURE_INFO: Record<
     channel: CHANNEL_SIGNAL,
   },
   "head-tilt": {
-    desc: "Head rotation",
+    desc: "Head rotation (experimental)",
     input: "Turn or tilt your head",
-    effect: "Adjusts bearing and pitch",
+    effect: "Adjusts bearing and pitch — can be flakey",
     channel: CHANNEL_NAV,
   },
   lean: {
-    desc: "Body lean panning",
+    desc: "Body lean panning (experimental)",
     input: "Lean left/right/forward/back",
-    effect: "Pans the map via shoulder offset",
+    effect: "Pans map via shoulder offset — can be flakey",
     channel: CHANNEL_NAV,
   },
 };
 
 // ── Gesture Indicators ──
+
+/** All known gesture names + their registration config for re-enabling */
+const GESTURE_REGISTRY: Record<string, { handler: any; priority: number; group: string }> = {
+  "pinch-pan":    { handler: null, priority: 20, group: "navigation" },
+  "pinch-zoom":   { handler: null, priority: 25, group: "navigation" },
+  "pinch-rotate": { handler: null, priority: 22, group: "rotation" },
+  "pinch-pitch":  { handler: null, priority: 21, group: "pitch" },
+  "open-palm":    { handler: null, priority: 5,  group: "signal" },
+  "fist":         { handler: null, priority: 30, group: "action" },
+  "gaze":         { handler: gaze, priority: 10, group: "gaze" },
+  "blink":        { handler: blink, priority: 12, group: "action" },
+  "head-tilt":    { handler: headTilt, priority: 15, group: "navigation" },
+  "lean":         { handler: lean, priority: 14, group: "navigation" },
+};
 
 function GestureIndicators({
   getEngine,
@@ -1056,9 +1072,11 @@ function GestureIndicators({
     activeGestures: [] as string[],
     registeredGestures: [] as string[],
     handCount: 0,
+    hasFace: false,
     confidence: [] as number[],
   });
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [disabledGestures, setDisabledGestures] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let rafId = 0;
@@ -1069,6 +1087,7 @@ function GestureIndicators({
         activeGestures: engine?.getActiveGestureNames() ?? [],
         registeredGestures: listGestures(),
         handCount: frame?.hands.length ?? 0,
+        hasFace: !!(frame?.face && frame.face.length > 0),
         confidence: frame?.handConfidences ?? [],
       });
       rafId = requestAnimationFrame(tick);
@@ -1077,7 +1096,29 @@ function GestureIndicators({
     return () => cancelAnimationFrame(rafId);
   }, [getEngine]);
 
-  const { activeGestures, registeredGestures, handCount, confidence } = state;
+  const toggleGesture = useCallback((name: string) => {
+    setDisabledGestures((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) {
+        // Re-enable
+        next.delete(name);
+        const reg = GESTURE_REGISTRY[name];
+        if (reg?.handler) {
+          registerGesture(reg.handler, { priority: reg.priority, group: reg.group });
+        }
+      } else {
+        // Disable
+        next.add(name);
+        unregisterGesture(name);
+      }
+      return next;
+    });
+  }, []);
+
+  const { activeGestures, registeredGestures, handCount, hasFace, confidence } = state;
+
+  // Show all known gestures (registered + disabled)
+  const allGestures = Object.keys(GESTURE_INFO);
 
   return (
     <div
@@ -1113,11 +1154,12 @@ function GestureIndicators({
             {handCount}
           </span>
         </span>
+        {hasFace && <span style={{ color: "#4ade80" }}>face</span>}
         {confidence.length > 0 && (
           <span>
             conf:{" "}
             <span style={{ color: "rgba(255,255,255,0.6)" }}>
-              {confidence.map((c) => `${(c * 100).toFixed(0)}%`).join(" / ")}
+              {confidence.map((c) => `${(c * 100).toFixed(0)}%`).join("/")}
             </span>
           </span>
         )}
@@ -1130,24 +1172,24 @@ function GestureIndicators({
       </div>
 
       {/* Gesture cards */}
-      {registeredGestures.map((name) => {
-        const isActive = activeGestures.includes(name);
+      {allGestures.map((name) => {
+        const isDisabled = disabledGestures.has(name);
+        const isActive = !isDisabled && activeGestures.includes(name);
         const info = GESTURE_INFO[name];
         const isExpanded = expanded === name;
 
         return (
           <div
             key={name}
-            onClick={() => setExpanded(isExpanded ? null : name)}
             style={{
               width: "100%",
               padding: isExpanded ? "6px 8px" : "3px 8px",
               borderRadius: 6,
               fontSize: 10,
               fontFamily: "monospace",
-              cursor: "pointer",
               backdropFilter: "blur(12px)",
               transition: "all 150ms",
+              opacity: isDisabled ? 0.4 : 1,
               background: isActive
                 ? "rgba(245, 158, 11, 0.2)"
                 : "rgba(0,0,0,0.5)",
@@ -1158,23 +1200,49 @@ function GestureIndicators({
           >
             {/* Header row */}
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              {/* Active dot */}
-              <span
+              {/* Enable/disable toggle */}
+              <button
+                onClick={(e) => { e.stopPropagation(); toggleGesture(name); }}
+                title={isDisabled ? "Enable gesture" : "Disable gesture"}
                 style={{
-                  width: 5,
-                  height: 5,
-                  borderRadius: "50%",
-                  background: isActive ? "#fbbf24" : "rgba(255,255,255,0.15)",
-                  boxShadow: isActive ? "0 0 6px #fbbf24" : "none",
+                  width: 14,
+                  height: 14,
+                  borderRadius: 3,
+                  border: isDisabled
+                    ? "1px solid rgba(255,255,255,0.15)"
+                    : isActive
+                      ? "1px solid rgba(245,158,11,0.6)"
+                      : "1px solid rgba(255,255,255,0.25)",
+                  background: isDisabled
+                    ? "transparent"
+                    : isActive
+                      ? "rgba(245, 158, 11, 0.5)"
+                      : "rgba(255,255,255,0.15)",
+                  cursor: "pointer",
                   flexShrink: 0,
+                  padding: 0,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 8,
+                  color: isDisabled ? "rgba(255,255,255,0.2)" : "#fff",
                 }}
-              />
+              >
+                {isDisabled ? "" : "\u2713"}
+              </button>
               {/* Name */}
               <span
+                onClick={() => setExpanded(isExpanded ? null : name)}
                 style={{
                   flex: 1,
-                  color: isActive ? "rgba(253, 230, 138, 1)" : "rgba(255,255,255,0.5)",
+                  cursor: "pointer",
+                  color: isDisabled
+                    ? "rgba(255,255,255,0.3)"
+                    : isActive
+                      ? "rgba(253, 230, 138, 1)"
+                      : "rgba(255,255,255,0.5)",
                   fontWeight: isActive ? 600 : 400,
+                  textDecoration: isDisabled ? "line-through" : "none",
                 }}
               >
                 {name}
@@ -1200,7 +1268,7 @@ function GestureIndicators({
 
             {/* Expanded details */}
             {isExpanded && info && (
-              <div style={{ marginTop: 4, paddingLeft: 11 }}>
+              <div style={{ marginTop: 4, paddingLeft: 20 }}>
                 <div style={{ color: "rgba(255,255,255,0.7)", marginBottom: 2 }}>
                   {info.desc}
                 </div>
@@ -1213,6 +1281,12 @@ function GestureIndicators({
                 <div style={{ color: "rgba(255,255,255,0.35)" }}>
                   <span style={{ color: "rgba(255,255,255,0.2)" }}>channel:</span>{" "}
                   <span style={{ color: info.channel.color }}>{info.channel.label}</span>
+                </div>
+                <div style={{ color: "rgba(255,255,255,0.35)", marginTop: 2 }}>
+                  <span style={{ color: "rgba(255,255,255,0.2)" }}>status:</span>{" "}
+                  <span style={{ color: isDisabled ? "#ef4444" : "#4ade80" }}>
+                    {isDisabled ? "disabled" : registeredGestures.includes(name) ? "enabled" : "not registered"}
+                  </span>
                 </div>
               </div>
             )}
