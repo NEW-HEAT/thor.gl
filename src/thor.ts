@@ -1,8 +1,8 @@
 /**
  * Thor — framework-agnostic entry point for thor.gl.
  *
- * Wraps the engine and wires up three output channels:
- *   1. Navigation: emits synthetic mjolnir events into deck.eventManager
+ * Wraps the engine and wires up three output channels via the emit/ layer:
+ *   1. Navigation: emits standard mjolnir events into deck.eventManager
  *   2. Picking: calls deck.pickObject() for interaction gestures
  *   3. Signals: fires callbacks for discrete gestures (blink, fist, etc.)
  *
@@ -22,6 +22,17 @@ import type { ViewState } from "./gestures/types";
 import type { ThorGestureConfig } from "./gestures/config";
 import { setGestureConfig } from "./gestures/config";
 import { createEngine, type EngineHandle } from "./engine";
+import {
+  createNavigationEmitter,
+  type NavigationEmitter,
+  type EventManagerLike,
+} from "./emit/navigation";
+import {
+  createPickingEmitter,
+  type PickingEmitter,
+  type DeckLike as PickingDeckLike,
+} from "./emit/picking";
+import { SignalEmitter, type ThorSignalEvent } from "./emit/signals";
 
 // ── Types ──
 
@@ -64,141 +75,35 @@ interface ResolvedOptions {
 /**
  * Minimal deck.gl Deck interface.
  *
- * We only require the parts of Deck that Thor actually uses, so this works
+ * Duck-typed to the minimal surface Thor needs, so it works
  * with any version of deck.gl that satisfies the shape.
  */
-interface DeckLike {
-  /** The deck's canvas element (used for coordinate mapping) */
+export interface DeckInstance {
   readonly canvas: HTMLCanvasElement;
-  /**
-   * The mjolnir EventManager — we emit synthetic navigation events here.
-   * Typed as `any` because we access internal APIs until mjolnir provides
-   * a public emit() method.
-   */
-  readonly eventManager: any;
-  /** Public picking API */
+  readonly eventManager: EventManagerLike;
   pickObject(opts: { x: number; y: number; radius?: number }): any;
-  /** Current props (for firing deck-level callbacks) */
   readonly props: Record<string, any>;
-}
-
-// ── Signal Emitter (lightweight built-in EventEmitter) ──
-
-type SignalHandler = (event: any) => void;
-
-class SignalEmitter {
-  private handlers = new Map<string, Set<SignalHandler>>();
-  private onceWrappers = new WeakMap<SignalHandler, SignalHandler>();
-
-  on(event: string, handler: SignalHandler): void {
-    let set = this.handlers.get(event);
-    if (!set) {
-      set = new Set();
-      this.handlers.set(event, set);
-    }
-    set.add(handler);
-  }
-
-  once(event: string, handler: SignalHandler): void {
-    const wrapper: SignalHandler = (e) => {
-      this.off(event, wrapper);
-      handler(e);
-    };
-    this.onceWrappers.set(handler, wrapper);
-    this.on(event, wrapper);
-  }
-
-  off(event: string, handler: SignalHandler): void {
-    const set = this.handlers.get(event);
-    if (!set) return;
-    // Try removing the handler directly, then try removing its once-wrapper
-    if (!set.delete(handler)) {
-      const wrapper = this.onceWrappers.get(handler);
-      if (wrapper) {
-        set.delete(wrapper);
-        this.onceWrappers.delete(handler);
-      }
-    }
-    if (set.size === 0) this.handlers.delete(event);
-  }
-
-  emit(event: string, data: any): void {
-    const set = this.handlers.get(event);
-    if (!set) return;
-    for (const handler of set) {
-      try {
-        handler(data);
-      } catch (err) {
-        console.error(`[thor.gl] Signal handler error for "${event}":`, err);
-      }
-    }
-  }
-
-  removeAllListeners(): void {
-    this.handlers.clear();
-  }
-}
-
-// ── Navigation helpers ──
-
-/** Gestures whose group is "signal" or "action" — these produce signals, not navigation */
-const SIGNAL_GROUPS = new Set(["signal", "action"]);
-
-/**
- * Create a synthetic WheelEvent-like object for zoom injection.
- * deck.gl's ViewStateController listens for 'wheel' events via mjolnir.
- */
-function syntheticWheelEvent(
-  canvas: HTMLCanvasElement,
-  deltaY: number,
-  center: { x: number; y: number }
-): WheelEvent {
-  const rect = canvas.getBoundingClientRect();
-  return new WheelEvent("wheel", {
-    deltaY,
-    clientX: rect.left + center.x,
-    clientY: rect.top + center.y,
-    bubbles: true,
-    cancelable: true,
-  });
-}
-
-/**
- * Create a synthetic PointerEvent for pan injection.
- * We emit pointermove to simulate drag-panning through the EventManager.
- */
-function syntheticPointerEvent(
-  type: string,
-  canvas: HTMLCanvasElement,
-  position: { x: number; y: number },
-  extra: Record<string, any> = {}
-): PointerEvent {
-  const rect = canvas.getBoundingClientRect();
-  return new PointerEvent(type, {
-    clientX: rect.left + position.x,
-    clientY: rect.top + position.y,
-    bubbles: true,
-    cancelable: true,
-    pointerId: 1,
-    pointerType: "touch",
-    isPrimary: true,
-    ...extra,
-  });
 }
 
 // ── Thor class ──
 
 export class Thor {
-  private deck: DeckLike;
+  private deck: DeckInstance;
   private options: ResolvedOptions;
   private engine: EngineHandle | null = null;
-  private signals: SignalEmitter;
   private running = false;
+
+  // The three output channels
+  private navigation: NavigationEmitter | null = null;
+  private picking: PickingEmitter | null = null;
+  private signals: SignalEmitter;
+
+  // State tracking
   private latestFrame: ThorFrame = EMPTY_FRAME;
   private latestViewState: ViewState | null = null;
-  private previousViewState: ViewState | null = null;
+  private activeGesturesPrev = new Set<string>();
 
-  constructor(deck: DeckLike, options?: ThorOptions) {
+  constructor(deck: DeckInstance, options?: ThorOptions) {
     this.deck = deck;
     this.options = {
       hand: options?.hand ?? true,
@@ -224,6 +129,10 @@ export class Thor {
       setGestureConfig(this.options.config);
     }
 
+    // Wire up the three output channels
+    this.navigation = createNavigationEmitter(this.deck.eventManager);
+    this.picking = createPickingEmitter(this.deck as PickingDeckLike);
+
     const engine = createEngine({
       detector: this.options.detector,
       gestures: this.options.gestures,
@@ -231,7 +140,6 @@ export class Thor {
         this.handleViewStateChange(updater);
       },
       onViewStateNotify: (vs) => {
-        this.previousViewState = this.latestViewState;
         this.latestViewState = vs;
       },
       onFrame: (frame) => {
@@ -258,9 +166,11 @@ export class Thor {
     this.engine?.stop();
     this.engine = null;
     this.running = false;
+    this.navigation = null;
+    this.picking = null;
     this.latestFrame = EMPTY_FRAME;
     this.latestViewState = null;
-    this.previousViewState = null;
+    this.activeGesturesPrev.clear();
   }
 
   /** Whether Thor is currently running */
@@ -270,20 +180,20 @@ export class Thor {
 
   // ── Signal event API ──
 
-  /** Subscribe to a signal event (e.g. 'fist', 'blink', 'open-palm') */
-  on(event: string, handler: (event: any) => void): this {
+  /** Subscribe to a signal event (e.g. 'fist', 'blink', 'gaze:pick') */
+  on(event: string, handler: (event: ThorSignalEvent) => void): this {
     this.signals.on(event, handler);
     return this;
   }
 
   /** Subscribe to a signal event, firing only once */
-  once(event: string, handler: (event: any) => void): this {
+  once(event: string, handler: (event: ThorSignalEvent) => void): this {
     this.signals.once(event, handler);
     return this;
   }
 
   /** Unsubscribe from a signal event */
-  off(event: string, handler: (event: any) => void): this {
+  off(event: string, handler: (event: ThorSignalEvent) => void): this {
     this.signals.off(event, handler);
     return this;
   }
@@ -300,17 +210,15 @@ export class Thor {
     const frame = this.latestFrame;
     if (!frame.face) return null;
 
-    // Iris landmarks are at indices 468-477 in the face mesh.
-    // Left iris center: 468, Right iris center: 473
+    // Iris landmarks: left center = 468, right center = 473
     const leftIris = frame.face[468];
     const rightIris = frame.face[473];
-
     if (!leftIris || !rightIris) return null;
 
     return {
       x: (leftIris.x + rightIris.x) / 2,
       y: (leftIris.y + rightIris.y) / 2,
-      confidence: (leftIris.visibility ?? 0.5 + (rightIris.visibility ?? 0.5)) / 2,
+      confidence: ((leftIris.visibility ?? 0.5) + (rightIris.visibility ?? 0.5)) / 2,
     };
   }
 
@@ -336,248 +244,131 @@ export class Thor {
    * Channel 1: NAVIGATION
    *
    * The engine reports viewState changes via onViewStateChange(updater).
-   * We intercept the updater, compute a delta, and emit synthetic events
-   * into deck.eventManager so deck.gl's built-in ViewStateController
-   * processes them like normal user input.
-   *
-   * Fallback: if fallbackSetViewState is provided, we skip event emission
-   * and call the setter directly (backward-compatible with useThor pattern).
+   * If fallbackSetViewState is provided, we use it directly.
+   * Otherwise, we figure out which gesture caused the change and
+   * emit the corresponding mjolnir event via the navigation emitter.
    */
   private handleViewStateChange(updater: (vs: ViewState) => ViewState): void {
-    // If we have a fallback, use it directly — no event emission needed
     if (this.options.fallbackSetViewState) {
       this.options.fallbackSetViewState(updater);
       return;
     }
 
-    // Compute the viewState delta by applying the updater to our tracked state
+    if (!this.navigation) return;
+
     const current = this.latestViewState ?? this.getInitialViewState();
     const next = updater(current);
     if (next === current) return;
 
-    // Track the new state
-    this.previousViewState = current;
     this.latestViewState = next;
 
-    // Emit synthetic events based on what changed
-    this.emitNavigationEvents(current, next);
-  }
-
-  /**
-   * Emit synthetic DOM events into the deck's EventManager based on
-   * the viewState delta. This is the core navigation integration.
-   *
-   * TODO: Once mjolnir.js provides a public emit() API, switch to that
-   * instead of dispatching DOM events on the canvas. The current approach
-   * works because EventManager listens on the canvas element.
-   */
-  private emitNavigationEvents(prev: ViewState, next: ViewState): void {
+    // Determine which navigation gestures are active and emit for each
     const canvas = this.deck.canvas;
     if (!canvas) return;
-
     const rect = canvas.getBoundingClientRect();
-    const centerX = rect.width / 2;
-    const centerY = rect.height / 2;
-    const center = { x: centerX, y: centerY };
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
 
-    // Zoom changed — emit wheel event
-    const zoomDelta = next.zoom - prev.zoom;
-    if (Math.abs(zoomDelta) > 0.001) {
-      // WheelEvent deltaY: negative = zoom in, positive = zoom out
-      // deck.gl convention: zoom increase = zoom in
-      const wheelDelta = -zoomDelta * 100;
-      const wheelEvent = syntheticWheelEvent(canvas, wheelDelta, center);
-      canvas.dispatchEvent(wheelEvent);
+    const activeGestures = this.getActiveGestures();
+
+    for (const name of activeGestures) {
+      if (!this.navigation.isNavigationGesture(name)) continue;
+
+      const phase = this.activeGesturesPrev.has(name) ? "move" : "start";
+
+      // Build gesture data from the viewState delta
+      const data: Record<string, unknown> = {
+        centerX: cx,
+        centerY: cy,
+        deltaX: (next.longitude - current.longitude) * Math.pow(2, next.zoom),
+        deltaY: (next.latitude - current.latitude) * Math.pow(2, next.zoom),
+        scale: Math.pow(2, next.zoom - current.zoom),
+        rotation: (next.bearing ?? 0) - (current.bearing ?? 0),
+      };
+
+      this.navigation.emitGesture(name, phase, data);
     }
 
-    // Pan changed (longitude/latitude) — emit pointer events to simulate drag
-    const lonDelta = next.longitude - prev.longitude;
-    const latDelta = next.latitude - prev.latitude;
-    if (Math.abs(lonDelta) > 0.0001 || Math.abs(latDelta) > 0.0001) {
-      // Convert geo deltas to approximate pixel movement
-      // This is rough — the actual px/deg ratio depends on zoom level
-      const scale = Math.pow(2, next.zoom);
-      const pxPerDeg = (256 * scale) / 360;
-      const dx = -lonDelta * pxPerDeg;
-      const dy = latDelta * pxPerDeg;
-
-      // Simulate a pointer drag: down → move → up
-      const startX = centerX;
-      const startY = centerY;
-      const endX = startX + dx;
-      const endY = startY + dy;
-
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointerdown", canvas, { x: startX, y: startY }, {
-          button: 0,
-          buttons: 1,
-        })
-      );
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointermove", canvas, { x: endX, y: endY }, {
-          buttons: 1,
-        })
-      );
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointerup", canvas, { x: endX, y: endY })
-      );
-    }
-
-    // Bearing changed — emit pointer events with right button (rotate)
-    const bearingDelta = (next.bearing ?? 0) - (prev.bearing ?? 0);
-    if (Math.abs(bearingDelta) > 0.01) {
-      const dx = bearingDelta * 2; // px per degree of bearing
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointerdown", canvas, center, {
-          button: 2,
-          buttons: 2,
-        })
-      );
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointermove", canvas, {
-          x: centerX + dx,
-          y: centerY,
-        }, { buttons: 2 })
-      );
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointerup", canvas, {
-          x: centerX + dx,
-          y: centerY,
-        })
-      );
-    }
-
-    // Pitch changed — emit pointer events with ctrl+right or middle button
-    const pitchDelta = (next.pitch ?? 0) - (prev.pitch ?? 0);
-    if (Math.abs(pitchDelta) > 0.01) {
-      const dy = -pitchDelta * 2; // px per degree of pitch
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointerdown", canvas, center, {
-          button: 1,
-          buttons: 4,
-        })
-      );
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointermove", canvas, {
-          x: centerX,
-          y: centerY + dy,
-        }, { buttons: 4 })
-      );
-      canvas.dispatchEvent(
-        syntheticPointerEvent("pointerup", canvas, {
-          x: centerX,
-          y: centerY + dy,
-        })
-      );
+    // Emit end events for gestures that just stopped
+    for (const prevName of this.activeGesturesPrev) {
+      if (this.navigation.isNavigationGesture(prevName) && !activeGestures.includes(prevName)) {
+        this.navigation.emitGesture(prevName, "end", { centerX: cx, centerY: cy });
+      }
     }
   }
 
   /**
    * Channel 2 & 3: PICKING + SIGNALS
    *
-   * On each frame, check for:
-   * - Interaction gestures (gaze, hand-point) → call deck.pickObject()
-   * - Signal gestures (fist, blink, open-palm) → emit via this.signals
+   * On each frame:
+   * - Emit signal events for active gestures
+   * - Run picking for gaze and hand-point if enabled
+   * - Track gesture activation/deactivation
    */
   private handleFrame(frame: ThorFrame): void {
     const activeGestures = this.getActiveGestures();
+    const activeSet = new Set(activeGestures);
 
     // ── Channel 3: SIGNALS ──
-    // Emit signal events for discrete gesture activations
-    for (const gestureName of activeGestures) {
-      // Emit every active gesture as a signal — consumers can filter
-      this.signals.emit(gestureName, {
-        gesture: gestureName,
-        frame,
-        timestamp: frame.timestamp,
-      });
+    for (const name of activeGestures) {
+      if (this.signals.isSignalGesture(name)) {
+        this.signals.emit(name, { gesture: name });
+      }
+    }
+
+    // Emit activation/deactivation signals for all gesture types
+    for (const name of activeGestures) {
+      if (!this.activeGesturesPrev.has(name)) {
+        this.signals.emit("gesture:activate", { gesture: name });
+      }
+    }
+    for (const prev of this.activeGesturesPrev) {
+      if (!activeSet.has(prev)) {
+        this.signals.emit("gesture:deactivate", { gesture: prev });
+      }
     }
 
     // ── Channel 2: PICKING ──
-    // For gaze-based picking
-    if (this.options.gaze || this.options.face) {
-      const gazePos = this.getGaze();
-      if (gazePos && gazePos.confidence > 0.3) {
-        const canvas = this.deck.canvas;
-        if (canvas) {
-          const rect = canvas.getBoundingClientRect();
-          const x = gazePos.x * rect.width;
-          const y = gazePos.y * rect.height;
+    if (this.picking) {
+      // Gaze picking
+      if (this.options.gaze || this.options.face) {
+        const gazePos = this.getGaze();
+        if (gazePos && gazePos.confidence > 0.3) {
+          const canvas = this.deck.canvas;
+          if (canvas) {
+            const rect = canvas.getBoundingClientRect();
+            this.picking.emitPicking("gazemove", {
+              x: gazePos.x * rect.width,
+              y: gazePos.y * rect.height,
+            }, { confidence: gazePos.confidence });
+          }
+        }
+      }
 
-          try {
-            const picked = this.deck.pickObject({ x, y, radius: 10 });
-            if (picked) {
-              this.signals.emit("gaze:pick", {
-                gesture: "gaze",
-                object: picked,
-                x,
-                y,
-                frame,
-                timestamp: frame.timestamp,
-              });
-
-              // Fire onGazePick callback on deck props if defined
-              if (typeof this.deck.props.onGazePick === "function") {
-                this.deck.props.onGazePick(picked);
-              }
-            }
-          } catch {
-            // pickObject may throw if deck is not ready — ignore
+      // Hand-point picking (index fingertip = landmark 8)
+      if (frame.hands.length > 0) {
+        const indexTip = frame.hands[0]?.[8];
+        if (indexTip) {
+          const canvas = this.deck.canvas;
+          if (canvas) {
+            const rect = canvas.getBoundingClientRect();
+            this.picking.emitPicking("handpoint", {
+              x: indexTip.x * rect.width,
+              y: indexTip.y * rect.height,
+            }, { hand: 0 });
           }
         }
       }
     }
 
-    // For hand-based picking (index finger tip)
-    if (frame.hands.length > 0) {
-      const primaryHand = frame.hands[0];
-      // Index fingertip is landmark 8
-      const indexTip = primaryHand?.[8];
-      if (indexTip) {
-        const canvas = this.deck.canvas;
-        if (canvas) {
-          const rect = canvas.getBoundingClientRect();
-          const x = indexTip.x * rect.width;
-          const y = indexTip.y * rect.height;
+    // Emit raw frame for advanced consumers
+    this.signals.emit("frame", { frame, activeGestures });
 
-          try {
-            const picked = this.deck.pickObject({ x, y, radius: 5 });
-            if (picked) {
-              this.signals.emit("hand:pick", {
-                gesture: "hand-point",
-                object: picked,
-                x,
-                y,
-                hand: 0,
-                frame,
-                timestamp: frame.timestamp,
-              });
-
-              // Fire onHandPick callback on deck props if defined
-              if (typeof this.deck.props.onHandPick === "function") {
-                this.deck.props.onHandPick(picked);
-              }
-            }
-          } catch {
-            // pickObject may throw if deck is not ready — ignore
-          }
-        }
-      }
-    }
-
-    // Emit a generic frame event for consumers who want raw frame data
-    this.signals.emit("frame", {
-      frame,
-      activeGestures,
-      timestamp: frame.timestamp,
-    });
+    // Update tracking
+    this.activeGesturesPrev = activeSet;
   }
 
-  /**
-   * Get a reasonable initial viewState from deck props.
-   * This is used as the starting point for delta computation
-   * before the first onViewStateNotify fires.
-   */
+  /** Get initial viewState from deck props for delta computation */
   private getInitialViewState(): ViewState {
     const props = this.deck.props;
     const vs = props.viewState ?? props.initialViewState ?? {};

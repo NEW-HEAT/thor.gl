@@ -6,10 +6,26 @@
  */
 
 // ── Framework-agnostic class ──
-export { Thor, type ThorOptions } from "./thor";
+export { Thor, type ThorOptions, type DeckInstance } from "./thor";
 
 // ── React hook ──
 export { useThor, type ThorConfig, type ThorResult } from "./useThor";
+
+// ── Emit layer (output channels) ──
+export {
+  createNavigationEmitter,
+  type NavigationEmitter,
+  type EventManagerLike,
+  type GesturePhase,
+  createPickingEmitter,
+  type PickingEmitter,
+  type PickingResult,
+  type ThorPickingEvent,
+  SignalEmitter,
+  SIGNAL_EVENTS,
+  type ThorSignalEvent,
+  type SignalEventType,
+} from "./emit";
 
 // ── Widget ──
 export { ThorWidget } from "./ThorWidget";
