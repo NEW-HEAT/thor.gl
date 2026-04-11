@@ -23,10 +23,17 @@ import {
   gaze,
   blink,
   lean,
+  setGazeCalibration,
+  getGazeCalibration,
+  extractIrisPosition,
+  extractHeadPose,
+  fitCalibration,
   FACE,
   type ViewState,
   type ThorFrame,
   type EngineHandle,
+  type CalibrationPoint,
+  type CalibrationData,
   HAND,
   FINGERTIPS,
 } from "thor.gl";
@@ -114,6 +121,7 @@ export function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [eventLog, setEventLog] = useState<LogEntry[]>([]);
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [showCalibration, setShowCalibration] = useState(false);
 
   // Check camera when switching to thor mode
   useEffect(() => {
@@ -222,34 +230,35 @@ export function App() {
       const prev = prevGesturesRef.current;
       const frame = engine.getLatestFrame();
 
-      // ── Attention gate via iris tracking ──
+      // ── Gaze via model + attention gate ──
       if (frame?.face && frame.face.length > 474) {
-        const leftIris = frame.face[FACE.LEFT_IRIS_CENTER];
-        const rightIris = frame.face[FACE.RIGHT_IRIS_CENTER];
-        if (leftIris && rightIris) {
-          const gazeX = (leftIris.x + rightIris.x) / 2;
-          const gazeY = (leftIris.y + rightIris.y) / 2;
+        const iris = extractIrisPosition(frame.face);
+        const headPose = extractHeadPose(frame.face);
+
+        if (iris && headPose) {
+          // Combine head rotation + iris-in-eye position for screen gaze
+          const irisX = (iris.leftX + iris.rightX) / 2;
+          const irisY = (iris.leftY + iris.rightY) / 2;
+          const gazeX = Math.max(0, Math.min(1,
+            0.5 + headPose.yaw * 1.2 + (irisX - 0.5) * 1.4));
+          const gazeY = Math.max(0, Math.min(1,
+            0.5 - headPose.pitch * 0.8 + (irisY - 0.5) * 1.0));
+
           setGazePos({ x: gazeX, y: gazeY });
 
-          // Check if gaze is roughly centered (looking at screen)
-          // Iris x is 0-1 (mirrored), centered around 0.5
-          const offCenterX = Math.abs(gazeX - 0.5);
-          const offCenterY = Math.abs(gazeY - 0.5);
-          const lookingAtScreen = offCenterX < 0.18 && offCenterY < 0.22;
-
+          // Attention: is gaze within screen bounds (with margin)?
+          const lookingAtScreen = gazeX > 0.05 && gazeX < 0.95 &&
+                                  gazeY > 0.05 && gazeY < 0.95;
           if (lookingAtScreen) {
             attentionLostAt.current = null;
             setIsAttentive(true);
-          } else {
-            if (!attentionLostAt.current) {
-              attentionLostAt.current = Date.now();
-            } else if (Date.now() - attentionLostAt.current > ATTENTION_DELAY) {
-              setIsAttentive(false);
-            }
+          } else if (!attentionLostAt.current) {
+            attentionLostAt.current = Date.now();
+          } else if (Date.now() - attentionLostAt.current > ATTENTION_DELAY) {
+            setIsAttentive(false);
           }
         }
       } else if (!frame?.face) {
-        // No face detected at all
         setGazePos(null);
         if (!attentionLostAt.current) {
           attentionLostAt.current = Date.now();
@@ -529,6 +538,20 @@ export function App() {
         </div>
       )}
 
+      {/* Calibration overlay */}
+      {showCalibration && (
+        <CalibrationOverlay
+          getEngine={getEngine}
+          onComplete={(data) => {
+            setGazeCalibration(data);
+            setShowCalibration(false);
+            addToast("GAZE CALIBRATED", "rgba(59, 130, 246, 0.9)");
+            addLog("calibration complete", "pick");
+          }}
+          onCancel={() => setShowCalibration(false)}
+        />
+      )}
+
       {/* Gaze cursor */}
       {inputMode === "thor" && !cameraError && isAttentive && gazePos && (
         <div
@@ -620,27 +643,50 @@ export function App() {
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <InputModeToggle mode={inputMode} onChange={setInputMode} />
           {inputMode === "thor" && (
-            <button
-              onClick={() => setShowDebug((d) => !d)}
-              style={{
-                padding: "6px 10px",
-                borderRadius: 999,
-                border: showDebug
-                  ? "1px solid rgba(245, 158, 11, 0.3)"
-                  : "1px solid rgba(255,255,255,0.06)",
-                background: showDebug
-                  ? "rgba(245, 158, 11, 0.2)"
-                  : "rgba(0,0,0,0.4)",
-                color: showDebug
-                  ? "rgba(252, 211, 77, 1)"
-                  : "rgba(255,255,255,0.3)",
-                fontSize: 11,
-                cursor: "pointer",
-                backdropFilter: "blur(12px)",
-              }}
-            >
-              debug
-            </button>
+            <>
+              <button
+                onClick={() => setShowCalibration(true)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: getGazeCalibration()
+                    ? "1px solid rgba(59, 130, 246, 0.3)"
+                    : "1px solid rgba(255,255,255,0.06)",
+                  background: getGazeCalibration()
+                    ? "rgba(59, 130, 246, 0.2)"
+                    : "rgba(0,0,0,0.4)",
+                  color: getGazeCalibration()
+                    ? "rgba(147, 197, 253, 1)"
+                    : "rgba(255,255,255,0.3)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  backdropFilter: "blur(12px)",
+                }}
+              >
+                {getGazeCalibration() ? "recalibrate" : "calibrate gaze"}
+              </button>
+              <button
+                onClick={() => setShowDebug((d) => !d)}
+                style={{
+                  padding: "6px 10px",
+                  borderRadius: 999,
+                  border: showDebug
+                    ? "1px solid rgba(245, 158, 11, 0.3)"
+                    : "1px solid rgba(255,255,255,0.06)",
+                  background: showDebug
+                    ? "rgba(245, 158, 11, 0.2)"
+                    : "rgba(0,0,0,0.4)",
+                  color: showDebug
+                    ? "rgba(252, 211, 77, 1)"
+                    : "rgba(255,255,255,0.3)",
+                  fontSize: 11,
+                  cursor: "pointer",
+                  backdropFilter: "blur(12px)",
+                }}
+              >
+                debug
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -1036,13 +1082,13 @@ const GESTURE_INFO: Record<
     desc: "Head rotation (TBD)",
     input: "Turn or tilt your head",
     effect: "Not yet wired — needs tuning for reliable nav",
-    channel: CHANNEL_NAV,
+    channel: { label: "TBD", color: "#666" },
   },
   lean: {
     desc: "Body lean panning (TBD)",
     input: "Lean left/right/forward/back",
     effect: "Not yet wired — needs tuning for reliable nav",
-    channel: CHANNEL_NAV,
+    channel: { label: "TBD", color: "#666" },
   },
 };
 
@@ -1292,6 +1338,210 @@ function GestureIndicators({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// ── Calibration overlay ──
+
+const CALIBRATION_DOTS = [
+  { x: 0.1, y: 0.1 },   // top-left
+  { x: 0.5, y: 0.1 },   // top-center
+  { x: 0.9, y: 0.1 },   // top-right
+  { x: 0.1, y: 0.5 },   // mid-left
+  { x: 0.5, y: 0.5 },   // center
+  { x: 0.9, y: 0.5 },   // mid-right
+  { x: 0.1, y: 0.9 },   // bottom-left
+  { x: 0.5, y: 0.9 },   // bottom-center
+  { x: 0.9, y: 0.9 },   // bottom-right
+];
+
+function CalibrationOverlay({
+  getEngine,
+  onComplete,
+  onCancel,
+}: {
+  getEngine: () => EngineHandle | null;
+  onComplete: (data: CalibrationData) => void;
+  onCancel: () => void;
+}) {
+  const [currentDot, setCurrentDot] = useState(0);
+  const [collecting, setCollecting] = useState(false);
+  const [samples, setSamples] = useState<CalibrationPoint[]>([]);
+  const collectBuffer = useRef<{ irisX: number; irisY: number; headYaw: number; headPitch: number }[]>([]);
+  const SAMPLES_PER_DOT = 15; // Collect 15 frames (~0.5s at 30fps) per dot
+
+  useEffect(() => {
+    if (!collecting) return;
+
+    let rafId = 0;
+    function tick() {
+      const engine = getEngine();
+      const frame = engine?.getLatestFrame();
+      if (frame?.face && frame.face.length > 474) {
+        const iris = extractIrisPosition(frame.face);
+        const head = extractHeadPose(frame.face);
+        if (iris && head) {
+          const irisX = (iris.leftX + iris.rightX) / 2;
+          const irisY = (iris.leftY + iris.rightY) / 2;
+          collectBuffer.current.push({ irisX, irisY, headYaw: head.yaw, headPitch: head.pitch });
+
+          if (collectBuffer.current.length >= SAMPLES_PER_DOT) {
+            // Average the samples
+            const buf = collectBuffer.current;
+            const avg = {
+              irisX: buf.reduce((s, b) => s + b.irisX, 0) / buf.length,
+              irisY: buf.reduce((s, b) => s + b.irisY, 0) / buf.length,
+              headYaw: buf.reduce((s, b) => s + b.headYaw, 0) / buf.length,
+              headPitch: buf.reduce((s, b) => s + b.headPitch, 0) / buf.length,
+            };
+
+            const dot = CALIBRATION_DOTS[currentDot];
+            const point: CalibrationPoint = {
+              screenX: dot.x,
+              screenY: dot.y,
+              ...avg,
+            };
+
+            setSamples((prev) => {
+              const next = [...prev, point];
+              if (currentDot + 1 >= CALIBRATION_DOTS.length) {
+                // All dots collected — fit calibration
+                try {
+                  const calibData = fitCalibration(next);
+                  onComplete(calibData);
+                } catch {
+                  // Not enough points (shouldn't happen with 9)
+                  onCancel();
+                }
+              }
+              return next;
+            });
+
+            setCollecting(false);
+            collectBuffer.current = [];
+            setCurrentDot((d) => d + 1);
+            return; // Stop the loop
+          }
+        }
+      }
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [collecting, currentDot, getEngine, onComplete, onCancel]);
+
+  const dot = CALIBRATION_DOTS[currentDot];
+  const progress = collectBuffer.current.length / SAMPLES_PER_DOT;
+  const done = currentDot >= CALIBRATION_DOTS.length;
+
+  return (
+    <div
+      style={{
+        position: "absolute",
+        inset: 0,
+        zIndex: 200,
+        background: "rgba(0,0,0,0.85)",
+        cursor: "none",
+      }}
+    >
+      {!done && dot && (
+        <>
+          {/* Target dot */}
+          <div
+            style={{
+              position: "absolute",
+              left: `${dot.x * 100}%`,
+              top: `${dot.y * 100}%`,
+              transform: "translate(-50%, -50%)",
+            }}
+          >
+            {/* Outer ring (progress) */}
+            <svg width="48" height="48" style={{ position: "absolute", top: -24, left: -24 }}>
+              <circle
+                cx="24" cy="24" r="20"
+                fill="none"
+                stroke="rgba(59, 130, 246, 0.2)"
+                strokeWidth="3"
+              />
+              {collecting && (
+                <circle
+                  cx="24" cy="24" r="20"
+                  fill="none"
+                  stroke="#3b82f6"
+                  strokeWidth="3"
+                  strokeDasharray={`${progress * 125.6} 125.6`}
+                  strokeLinecap="round"
+                  transform="rotate(-90 24 24)"
+                />
+              )}
+            </svg>
+            {/* Center dot */}
+            <div
+              style={{
+                width: collecting ? 12 : 8,
+                height: collecting ? 12 : 8,
+                borderRadius: "50%",
+                background: collecting ? "#3b82f6" : "#fff",
+                boxShadow: collecting ? "0 0 16px #3b82f6" : "0 0 8px rgba(255,255,255,0.5)",
+                transition: "all 200ms",
+              }}
+            />
+          </div>
+
+          {/* Instructions */}
+          <div
+            style={{
+              position: "absolute",
+              bottom: 60,
+              left: "50%",
+              transform: "translateX(-50%)",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 14, color: "#fff", fontWeight: 500, marginBottom: 4 }}>
+              {collecting ? "Hold your gaze..." : "Look at the dot and click"}
+            </div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: "monospace" }}>
+              Point {currentDot + 1} of {CALIBRATION_DOTS.length}
+            </div>
+            <div style={{ marginTop: 12, display: "flex", gap: 8, justifyContent: "center" }}>
+              {!collecting && (
+                <button
+                  onClick={() => { collectBuffer.current = []; setCollecting(true); }}
+                  style={{
+                    padding: "8px 20px",
+                    borderRadius: 999,
+                    border: "1px solid rgba(59, 130, 246, 0.4)",
+                    background: "rgba(59, 130, 246, 0.2)",
+                    color: "#93c5fd",
+                    fontSize: 12,
+                    cursor: "pointer",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  capture
+                </button>
+              )}
+              <button
+                onClick={onCancel}
+                style={{
+                  padding: "8px 20px",
+                  borderRadius: 999,
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  background: "rgba(255,255,255,0.05)",
+                  color: "rgba(255,255,255,0.4)",
+                  fontSize: 12,
+                  cursor: "pointer",
+                  fontFamily: "monospace",
+                }}
+              >
+                cancel
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
