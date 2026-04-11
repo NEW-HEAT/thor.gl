@@ -2,9 +2,33 @@
 
 [Mjolnir](https://github.com/visgl/mjolnir.js) for Humans. Hand, face, and pose gesture control for [deck.gl](https://deck.gl).
 
-**[Live Demo](https://new-heat.github.io/thor.gl/)** | Built by [NEWHEAT](https://newheat.co)
+**[Live Demo](https://new-heat.github.io/thor.gl/)** | [RFC](https://github.com/NEW-HEAT/thor.gl/issues/1) | Built by [NEWHEAT](https://newheat.co)
+
+## Demo
+
+The live demo showcases all three output channels on a satellite globe with 20 pickable cities:
+
+- **Navigation** — pinch-pan, pinch-zoom, pinch-rotate, pinch-pitch with hand gestures
+- **Picking** — hover and click cities to select
+- **Signals** — fist toggles globe/mercator, open-palm fires a toast notification
+
+Toggle between **Mjolnir** (mouse/touch) and **Thor** (hand tracking) modes. Gesture cards on the right show live status with channel tags — click the checkbox to enable/disable any gesture at runtime.
+
+Additional demo features: live camera feed with hand skeleton overlay (debug panel), collapsible event log, camera indicator, attention gate (experimental), and 9-point gaze calibration flow (experimental).
+
+> Requires a webcam. For LAN access from another device: `HTTPS=1 npx vite --host`
+
+To run locally:
+
+```bash
+cd demo
+npm install
+npx vite --host
+```
 
 ## Quick start
+
+### React hook
 
 ```tsx
 import { useThor, setFistAction } from "thor.gl";
@@ -12,8 +36,11 @@ import { useThor, setFistAction } from "thor.gl";
 function MyMap() {
   const [viewState, setViewState] = useState(INITIAL_VIEW);
 
+  setFistAction(() => console.log("fist!"));
+
   const { widgets } = useThor({
     setViewState,
+    detector: "holistic",  // "hands" | "holistic" | "auto"
     enabled: true,
   });
 
@@ -27,57 +54,92 @@ function MyMap() {
 }
 ```
 
-## Built-in gestures
+### Thor class (framework-agnostic)
 
-| Gesture | Input | Effect | Group |
+```ts
+import { Thor } from "thor.gl";
+
+const thor = new Thor(deck, { hand: true, face: true });
+
+thor.on("fist", () => console.log("fist!"));
+thor.on("gesture:activate", (e) => console.log(e.gesture));
+
+await thor.start();
+```
+
+## Gestures
+
+### Active (hand tracking)
+
+| Gesture | Input | Effect | Channel |
 |---|---|---|---|
-| `pinch-pan` | Pinch + drag (1 hand) | Pan longitude/latitude | navigation |
-| `pinch-zoom` | Pinch (2 hands) apart/together | Zoom in/out | navigation |
-| `pinch-rotate` | Pinch (2 hands) + twist | Rotate bearing | rotation |
-| `pinch-pitch` | Pinch (2 hands) + move up/down | Tilt pitch | pitch |
-| `open-palm` | Open palm | Signal / stop inertia | signal |
-| `fist` | Closed fist (hold 300ms) | Fire action callback | action |
+| `pinch-pan` | Pinch + drag (1 hand) | Pan longitude/latitude | NAV |
+| `pinch-zoom` | Pinch (2 hands) apart/together | Zoom in/out | NAV |
+| `pinch-rotate` | Pinch (2 hands) + twist | Rotate bearing | NAV |
+| `pinch-pitch` | Pinch (2 hands) + move up/down | Tilt pitch | NAV |
+| `open-palm` | Open palm | Signal / stop inertia | SIGNAL |
+| `fist` | Closed fist (hold 300ms) | Fire action callback | SIGNAL |
+
+### Experimental (opt-in, requires holistic mode)
+
+| Gesture | Input | Status | Issue |
+|---|---|---|---|
+| `gaze` | Iris + head pose tracking | Needs better calibration model | [#3](https://github.com/NEW-HEAT/thor.gl/issues/3) |
+| `blink` | Deliberate blink (150-800ms) | Works, depends on gaze for targeting | |
+| `head-tilt` | Head rotation | Too flakey for navigation | |
+| `lean` | Body lean via pose skeleton | Too flakey for navigation | |
+
+Register experimental gestures manually:
+
+```ts
+import { registerGesture, gaze, blink, headTilt, lean } from "thor.gl";
+
+registerGesture(gaze, { priority: 10, group: "gaze" });
+registerGesture(blink, { priority: 12, group: "action" });
+```
+
+## Three output channels
+
+Thor routes gesture detections through three channels:
+
+```
+Camera -> MediaPipe -> Thor Engine -> detect + recognize
+    |
+    +-- NAVIGATION --- gestures emit standard mjolnir events -----> Controller -> ViewState
+    |                  (panmove, pinchmove, wheel)                  works with any controller
+    |
+    +-- PICKING ------ gestures call deck.pickObject() -----------> layer callbacks
+    |                  (onGaze, onHandPoint, onGrab)                works with any pickable layer
+    |
+    +-- SIGNALS ------ discrete gesture events -------------------> application callbacks
+                       (fist, blink, openpalm, wave)                thor.on('fist', handler)
+```
 
 ## Configuration
-
-All gesture parameters have defaults and can be overridden via `useThor`:
 
 ```tsx
 const { widgets } = useThor({
   setViewState,
   config: {
-    // Global detection
-    minConfidence: 0.5,     // hand detection confidence floor
-    grabDelay: 100,         // ms pinch must be held to confirm
-    pinchThreshold: 0.06,   // thumb-index distance for pinch
-
-    // Pan
+    minConfidence: 0.5,
+    grabDelay: 100,
+    pinchThreshold: 0.06,
     panSensitivity: 5.0,
-    panSmoothing: 0.4,      // low-pass filter (0-1, higher = smoother)
-    panMoveDeadzone: 0.004, // ignore jitter below this
-
-    // Zoom
+    panSmoothing: 0.4,
+    panMoveDeadzone: 0.004,
     zoomSensitivity: 10,
     zoomDeadzone: 0.015,
-
-    // Rotate
     rotateSensitivity: 40,
-    rotateDeadzone: 0.015,  // radians
-
-    // Pitch
+    rotateDeadzone: 0.015,
     pitchSensitivity: 80,
     pitchDeadzone: 0.008,
-
-    // Fist
-    fistConfirmMs: 300,     // hold duration before firing
-    fistCooldownMs: 1500,   // cooldown between fires
+    fistConfirmMs: 300,
+    fistCooldownMs: 1500,
   },
 });
 ```
 
 ## Custom gestures
-
-Implement `GestureHandler` and register it:
 
 ```ts
 import { registerGesture, type GestureHandler } from "thor.gl";
@@ -85,60 +147,45 @@ import { registerGesture, type GestureHandler } from "thor.gl";
 const myGesture: GestureHandler = {
   name: "thumbs-up",
   requires: ["hands"],
-
   detect(frame) {
     // Return { gesture: "thumbs-up", data: { ... } } or null
   },
-
   apply(detection, viewState, config) {
-    // Return modified viewState (or same reference for no change)
-    return viewState;
+    return viewState; // signal-only, no nav effect
   },
-
-  // Optional lifecycle
-  onActivate() {},
-  onDeactivate() {},
-  reset() {},
 };
 
 registerGesture(myGesture, { priority: 15, group: "signal" });
 ```
 
-### Conflict resolution
-
-Gestures in the **same group** compete — highest priority wins. Gestures in **different groups** coexist. This lets pan + fist fire simultaneously while pan and zoom resolve within "navigation".
+Gestures in the **same group** compete (highest priority wins). Different groups coexist.
 
 ## Architecture
 
 ```
-Camera  -->  MediaPipe HandLandmarker  -->  ThorFrame
-                                               |
-                    GestureHandler.detect()  <--+
-                           |
-                    resolveConflicts()
-                           |
-                    GestureHandler.apply()  -->  ViewState delta
-                           |
-                    ThorWidget.render()     -->  Canvas overlay
+Camera  -->  MediaPipe (Hand / Holistic)  -->  ThorFrame
+                                                  |
+                       GestureHandler.detect()  <-+
+                              |
+                       resolveConflicts()
+                              |
+                  +-----------+-----------+
+                  |           |           |
+              Navigation   Picking     Signals
+              emit/nav.ts  emit/pick   emit/signals
+                  |           |           |
+              EventManager  pickObject  callbacks
+                  |           |           |
+              Controller   Layer props  thor.on()
 ```
 
-- **Detection** (`src/detection/`) — MediaPipe wrapper. Auto-promotes from HandLandmarker to HolisticLandmarker when face/pose gestures are registered.
-- **Gestures** (`src/gestures/`) — Registry of `GestureHandler` implementations. Each handler owns its own detect/apply lifecycle.
-- **Engine** (`src/engine.ts`) — Frame loop at ~30fps. Fans out to handlers, resolves conflicts, merges viewState, notifies widget.
-- **Widget** (`src/ThorWidget.ts`) — deck.gl Widget that renders fingertip dots, pinch cursors, and mode indicators on a mirrored canvas overlay.
-- **Hook** (`src/useThor.ts`) — React hook that wires it all together. Returns a stable `widgets` array for DeckGL.
-
-## Demo
-
-A standalone demo app lives in `demo/`. To run it:
-
-```bash
-cd demo
-npm install
-npm run dev
-```
-
-This starts a Vite dev server with a satellite globe you can control with hand gestures.
+- **Detection** (`src/detection/`) — MediaPipe wrapper. Auto-promotes to holistic when face/pose gestures register.
+- **Gestures** (`src/gestures/`) — Registry of `GestureHandler` implementations with conflict resolution.
+- **Emit** (`src/emit/`) — Translation layer: navigation events, picking calls, signal dispatch.
+- **Thor** (`src/thor.ts`) — Framework-agnostic class wiring all three channels to a deck instance.
+- **Engine** (`src/engine.ts`) — Frame loop at ~30fps.
+- **Widget** (`src/ThorWidget.ts`) — deck.gl Widget for hand/body visualization overlay.
+- **Hook** (`src/useThor.ts`) — React hook wrapping the engine + widget.
 
 ## Peer dependencies
 
