@@ -1,9 +1,10 @@
 /**
- * thor.gl demo — Three output channels in action.
+ * thor.gl demo — Full RFC showcase.
  *
- * NAVIGATION:  pinch-pan, pinch-zoom, pinch-rotate, pinch-pitch, fist
- * PICKING:     hand-point → highlight cities, gaze → hover
+ * NAVIGATION:  pinch-pan, pinch-zoom, pinch-rotate, pinch-pitch, head-tilt, lean
+ * PICKING:     gaze → hover cities, hand-point → highlight, blink → select
  * SIGNALS:     fist → projection toggle, open-palm → toast, gesture log
+ * ATTENTION:   iris tracking → pause when not looking at screen
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -15,12 +16,24 @@ import {
   useThor,
   setFistAction,
   listGestures,
+  registerGesture,
+  headTilt,
+  gaze,
+  blink,
+  lean,
+  FACE,
   type ViewState,
   type ThorFrame,
   type EngineHandle,
   HAND,
   FINGERTIPS,
 } from "thor.gl";
+
+// ── Register face & pose gestures (not auto-registered) ──
+registerGesture(gaze, { priority: 10, group: "gaze" });
+registerGesture(blink, { priority: 12, group: "action" });
+registerGesture(headTilt, { priority: 15, group: "navigation" });
+registerGesture(lean, { priority: 14, group: "navigation" });
 
 type InputMode = "mjolnir" | "thor";
 
@@ -169,58 +182,114 @@ export function App() {
     });
   }, [addToast, addLog]);
 
-  // Thor gesture control
+  // Thor gesture control — holistic mode for hands + face + pose
   const { widgets: thorWidgets, getEngine } = useThor({
     setViewState: setViewState as React.Dispatch<React.SetStateAction<ViewState>>,
-    detector: "hands",
+    detector: "holistic",
     enabled: inputMode === "thor",
   });
 
-  // Track gestures for event log + toasts
+  // Gaze position (normalized 0-1, for cursor overlay)
+  const [gazePos, setGazePos] = useState<{ x: number; y: number } | null>(null);
+  // Attention gate
+  const [isAttentive, setIsAttentive] = useState(true);
+  const attentionLostAt = useRef<number | null>(null);
+  const ATTENTION_DELAY = 1500; // ms before showing "pay attention" overlay
+
+  // Track gestures for event log, toasts, gaze picking, attention
   const prevGesturesRef = useRef<Set<string>>(new Set());
+  const gazeHoveredRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (inputMode !== "thor") return;
+    if (inputMode !== "thor") {
+      setGazePos(null);
+      setIsAttentive(true);
+      attentionLostAt.current = null;
+      return;
+    }
 
     let rafId = 0;
     function tick() {
       const engine = getEngine();
-      if (engine) {
-        const active = engine.getActiveGestureNames();
-        const activeSet = new Set(active);
-        const prev = prevGesturesRef.current;
-
-        // Detect newly activated gestures
-        for (const g of active) {
-          if (!prev.has(g)) {
-            // Navigation gestures
-            if (["pinch-pan", "pinch-zoom", "pinch-rotate", "pinch-pitch"].includes(g)) {
-              addLog(g, "nav");
-            }
-            // Signal gestures
-            if (g === "open-palm") {
-              addToast("OPEN PALM", "rgba(34, 197, 94, 0.9)");
-              addLog(g, "signal");
-            }
-            if (g === "fist") {
-              addLog(g, "signal");
-            }
-          }
-        }
-
-        // Hand-point picking: index fingertip near a city = highlight
-        const frame = engine.getLatestFrame();
-        if (frame && frame.hands.length > 0) {
-          const hand = frame.hands[0];
-          const indexTip = hand?.[8]; // HAND.INDEX_TIP
-          if (indexTip) {
-            // We'll let the ScatterplotLayer's onHover handle actual picking
-            // but log when hand is present for the event log
-          }
-        }
-
-        prevGesturesRef.current = activeSet;
+      if (!engine) {
+        rafId = requestAnimationFrame(tick);
+        return;
       }
+
+      const active = engine.getActiveGestureNames();
+      const activeSet = new Set(active);
+      const prev = prevGesturesRef.current;
+      const frame = engine.getLatestFrame();
+
+      // ── Attention gate via iris tracking ──
+      if (frame?.face && frame.face.length > 474) {
+        const leftIris = frame.face[FACE.LEFT_IRIS_CENTER];
+        const rightIris = frame.face[FACE.RIGHT_IRIS_CENTER];
+        if (leftIris && rightIris) {
+          const gazeX = (leftIris.x + rightIris.x) / 2;
+          const gazeY = (leftIris.y + rightIris.y) / 2;
+          setGazePos({ x: gazeX, y: gazeY });
+
+          // Check if gaze is roughly centered (looking at screen)
+          // Iris x is 0-1 (mirrored), centered around 0.5
+          const offCenterX = Math.abs(gazeX - 0.5);
+          const offCenterY = Math.abs(gazeY - 0.5);
+          const lookingAtScreen = offCenterX < 0.18 && offCenterY < 0.22;
+
+          if (lookingAtScreen) {
+            attentionLostAt.current = null;
+            setIsAttentive(true);
+          } else {
+            if (!attentionLostAt.current) {
+              attentionLostAt.current = Date.now();
+            } else if (Date.now() - attentionLostAt.current > ATTENTION_DELAY) {
+              setIsAttentive(false);
+            }
+          }
+        }
+      } else if (!frame?.face) {
+        // No face detected at all
+        setGazePos(null);
+        if (!attentionLostAt.current) {
+          attentionLostAt.current = Date.now();
+        } else if (Date.now() - attentionLostAt.current > ATTENTION_DELAY * 2) {
+          setIsAttentive(false);
+        }
+      }
+
+      // ── Gesture events (only when attentive) ──
+      for (const g of active) {
+        if (!prev.has(g)) {
+          // Navigation
+          if (["pinch-pan", "pinch-zoom", "pinch-rotate", "pinch-pitch", "head-tilt", "lean"].includes(g)) {
+            addLog(g, "nav");
+          }
+          // Gaze
+          if (g === "gaze") {
+            addLog("gaze tracking", "pick");
+          }
+          // Signals
+          if (g === "open-palm") {
+            addToast("OPEN PALM", "rgba(34, 197, 94, 0.9)");
+            addLog(g, "signal");
+          }
+          if (g === "fist") {
+            addLog(g, "signal");
+          }
+          if (g === "blink") {
+            addToast("BLINK", "rgba(59, 130, 246, 0.9)");
+            addLog("blink", "signal");
+            // Blink = select hovered city
+            if (gazeHoveredRef.current) {
+              setSelectedCity(gazeHoveredRef.current);
+              addToast(`SELECTED: ${gazeHoveredRef.current}`, "rgba(168, 85, 247, 0.9)");
+              addLog(`blink-select: ${gazeHoveredRef.current}`, "pick");
+            }
+          }
+        }
+      }
+
+      prevGesturesRef.current = activeSet;
       rafId = requestAnimationFrame(tick);
     }
     rafId = requestAnimationFrame(tick);
@@ -408,6 +477,88 @@ export function App() {
               switch to Mjolnir mode
             </button>
           </div>
+        </div>
+      )}
+
+      {/* Attention gate overlay */}
+      {inputMode === "thor" && !cameraError && !isAttentive && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 90,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(0,0,0,0.5)",
+            backdropFilter: "blur(4px)",
+            transition: "opacity 500ms",
+          }}
+        >
+          <div
+            style={{
+              padding: "20px 32px",
+              borderRadius: 16,
+              background: "rgba(20,20,20,0.9)",
+              border: "1px solid rgba(245, 158, 11, 0.3)",
+              textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 28, marginBottom: 8 }}>{"\u{1F440}"}</div>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: "rgba(253, 230, 138, 1)",
+                marginBottom: 4,
+              }}
+            >
+              look at the screen to engage
+            </div>
+            <div
+              style={{
+                fontSize: 10,
+                fontFamily: "monospace",
+                color: "rgba(255,255,255,0.35)",
+              }}
+            >
+              thor.gl pauses when you look away
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Gaze cursor */}
+      {inputMode === "thor" && !cameraError && isAttentive && gazePos && (
+        <div
+          style={{
+            position: "absolute",
+            left: `${(1 - gazePos.x) * 100}%`,
+            top: `${gazePos.y * 100}%`,
+            transform: "translate(-50%, -50%)",
+            width: 24,
+            height: 24,
+            borderRadius: "50%",
+            border: "2px solid rgba(59, 130, 246, 0.6)",
+            background: "rgba(59, 130, 246, 0.1)",
+            boxShadow: "0 0 12px rgba(59, 130, 246, 0.3)",
+            pointerEvents: "none",
+            zIndex: 45,
+            transition: "left 100ms ease-out, top 100ms ease-out",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              transform: "translate(-50%, -50%)",
+              width: 4,
+              height: 4,
+              borderRadius: "50%",
+              background: "rgba(59, 130, 246, 0.8)",
+            }}
+          />
         </div>
       )}
 
@@ -868,6 +1019,30 @@ const GESTURE_INFO: Record<
     effect: "Fires action callback (globe toggle)",
     channel: CHANNEL_SIGNAL,
   },
+  gaze: {
+    desc: "Eye tracking cursor",
+    input: "Look at the screen (iris tracking)",
+    effect: "Blue gaze cursor follows your eyes",
+    channel: CHANNEL_PICK,
+  },
+  blink: {
+    desc: "Blink to select",
+    input: "Deliberate blink (both eyes, 150-800ms)",
+    effect: "Selects the gaze-hovered city",
+    channel: CHANNEL_SIGNAL,
+  },
+  "head-tilt": {
+    desc: "Head rotation",
+    input: "Turn or tilt your head",
+    effect: "Adjusts bearing and pitch",
+    channel: CHANNEL_NAV,
+  },
+  lean: {
+    desc: "Body lean panning",
+    input: "Lean left/right/forward/back",
+    effect: "Pans the map via shoulder offset",
+    channel: CHANNEL_NAV,
+  },
 };
 
 // ── Gesture Indicators ──
@@ -1168,19 +1343,64 @@ function CameraOverlay({
         }
       }
 
+      // Draw face mesh outline + iris
+      if (frame?.face && frame.face.length > 474) {
+        // Draw sparse face outline (key points only)
+        const faceColor = "rgba(100, 200, 255, 0.5)";
+        ctx.fillStyle = faceColor;
+
+        // Nose, forehead, chin, mouth corners
+        const keyPoints = [1, 10, 152, 61, 291, 33, 263, 133, 362];
+        for (const idx of keyPoints) {
+          const pt = frame.face[idx];
+          if (!pt) continue;
+          ctx.beginPath();
+          ctx.arc(pt.x * W, pt.y * H, 1.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Iris — larger, brighter
+        const leftIris = frame.face[468];
+        const rightIris = frame.face[473];
+        if (leftIris) {
+          ctx.fillStyle = "#3b82f6";
+          ctx.shadowColor = "#3b82f6";
+          ctx.shadowBlur = 8;
+          ctx.beginPath();
+          ctx.arc(leftIris.x * W, leftIris.y * H, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+        if (rightIris) {
+          ctx.fillStyle = "#3b82f6";
+          ctx.shadowColor = "#3b82f6";
+          ctx.shadowBlur = 8;
+          ctx.beginPath();
+          ctx.arc(rightIris.x * W, rightIris.y * H, 5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.shadowBlur = 0;
+        }
+      }
+
       ctx.restore();
 
       // HUD overlay (drawn un-mirrored on top)
       ctx.font = "bold 10px monospace";
       const count = frame?.hands.length ?? 0;
+      const hasFace = !!(frame?.face && frame.face.length > 0);
       const activeGestures = engine.getActiveGestureNames();
 
       // Top-left: detection status
-      if (count) {
+      const statusParts: string[] = [];
+      if (count) statusParts.push(`${count} hand${count > 1 ? "s" : ""}`);
+      if (hasFace) statusParts.push("face");
+
+      if (statusParts.length > 0) {
+        const statusText = statusParts.join(" + ");
         ctx.fillStyle = "rgba(0,0,0,0.5)";
-        ctx.fillRect(4, 4, 80, 16);
+        ctx.fillRect(4, 4, ctx.measureText(statusText).width + 8, 16);
         ctx.fillStyle = "#4ade80";
-        ctx.fillText(`${count} hand${count > 1 ? "s" : ""} tracked`, 8, 15);
+        ctx.fillText(statusText, 8, 15);
       } else {
         ctx.fillStyle = "rgba(0,0,0,0.5)";
         ctx.fillRect(4, 4, 76, 16);
@@ -1246,7 +1466,7 @@ function HintText({ inputMode }: { inputMode: InputMode }) {
   const text =
     inputMode === "mjolnir"
       ? "Drag to pan, scroll to zoom. Click cities to select."
-      : "Pinch to navigate \u00b7 Hover cities \u00b7 Fist to switch projection \u00b7 Open palm to signal";
+      : "Pinch to navigate \u00b7 Eyes track gaze \u00b7 Blink to select \u00b7 Fist to toggle \u00b7 Look away to pause";
 
   return (
     <span
