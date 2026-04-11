@@ -252,9 +252,10 @@ export function App() {
 
           setGazePos({ x: gazeX, y: gazeY });
 
-          // Attention: is gaze within screen bounds (with margin)?
-          const lookingAtScreen = gazeX > 0.05 && gazeX < 0.95 &&
-                                  gazeY > 0.05 && gazeY < 0.95;
+          // Attention: is gaze roughly on-screen?
+          // Wide bounds — only trigger "not looking" for extreme off-screen gaze
+          const lookingAtScreen = gazeX > -0.15 && gazeX < 1.15 &&
+                                  gazeY > -0.15 && gazeY < 1.15;
           if (lookingAtScreen) {
             attentionLostAt.current = null;
             setIsAttentive(true);
@@ -1127,7 +1128,9 @@ function GestureIndicators({
     confidence: [] as number[],
   });
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [disabledGestures, setDisabledGestures] = useState<Set<string>>(new Set());
+  const [disabledGestures, setDisabledGestures] = useState<Set<string>>(
+    new Set(["head-tilt", "lean"]) // TBD — not registered at startup
+  );
 
   useEffect(() => {
     let rafId = 0;
