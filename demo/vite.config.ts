@@ -9,6 +9,12 @@ export default defineConfig({
   plugins: [react()],
   root: __dirname,
   base: process.env.GITHUB_ACTIONS ? "/thor.gl/" : "/",
+  server: {
+    // HTTPS is required for camera APIs when accessing from another device
+    // on the LAN. Vite generates a self-signed cert automatically.
+    // Accept the browser warning on the remote machine.
+    https: !!process.env.HTTPS,
+  },
   resolve: {
     alias: {
       // Local source

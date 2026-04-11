@@ -112,15 +112,17 @@ export function App() {
 
     async function checkCamera() {
       try {
-        // First check if any video input devices exist
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoInputs = devices.filter((d) => d.kind === "videoinput");
-        if (videoInputs.length === 0) {
-          if (!cancelled) setCameraError("No camera detected. Thor requires a webcam for hand tracking.");
+        // navigator.mediaDevices is undefined when served over plain HTTP
+        // to a non-localhost origin (browsers restrict to secure contexts)
+        if (!navigator.mediaDevices?.getUserMedia) {
+          if (!cancelled) setCameraError(
+            "Camera API unavailable. This page must be served over HTTPS or localhost. " +
+            "Try accessing via localhost on this machine, or run: npx vite --host --https"
+          );
           return;
         }
 
-        // Then try to actually get access (handles permission denied)
+        // Try to get camera access (handles no device + permission denied)
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } },
         });
