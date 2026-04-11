@@ -543,19 +543,48 @@ function CameraIndicator({
 }: {
   getEngine: () => EngineHandle | null;
 }) {
-  const [hasHands, setHasHands] = useState(false);
+  const [status, setStatus] = useState<"off" | "streaming" | "human">("off");
 
   useEffect(() => {
     let rafId = 0;
     function tick() {
       const engine = getEngine();
-      const frame = engine?.getLatestFrame();
-      setHasHands((frame?.hands.length ?? 0) > 0);
+      if (!engine) {
+        setStatus("off");
+      } else {
+        const video = engine.getVideo();
+        const streaming = video && video.readyState >= 2 && !video.paused;
+        const frame = engine.getLatestFrame();
+        const hasHands = (frame?.hands.length ?? 0) > 0;
+        setStatus(hasHands ? "human" : streaming ? "streaming" : "off");
+      }
       rafId = requestAnimationFrame(tick);
     }
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
   }, [getEngine]);
+
+  const isLive = status !== "off";
+  const isHuman = status === "human";
+
+  const borderColor = isHuman
+    ? "rgba(239, 68, 68, 0.4)"
+    : isLive
+      ? "rgba(239, 68, 68, 0.2)"
+      : "rgba(255,255,255,0.06)";
+
+  const dotColor = isLive ? "#ef4444" : "#666";
+  const textColor = isHuman
+    ? "rgba(252, 165, 165, 0.9)"
+    : isLive
+      ? "rgba(239, 68, 68, 0.6)"
+      : "rgba(255,255,255,0.3)";
+
+  const label = isHuman
+    ? "smile, you're on camera"
+    : isLive
+      ? "camera live — no hands detected"
+      : "camera starting...";
 
   return (
     <div
@@ -567,9 +596,7 @@ function CameraIndicator({
         borderRadius: 8,
         background: "rgba(0,0,0,0.6)",
         backdropFilter: "blur(12px)",
-        border: hasHands
-          ? "1px solid rgba(239, 68, 68, 0.4)"
-          : "1px solid rgba(255,255,255,0.06)",
+        border: `1px solid ${borderColor}`,
       }}
     >
       <span
@@ -577,20 +604,20 @@ function CameraIndicator({
           width: 8,
           height: 8,
           borderRadius: "50%",
-          background: hasHands ? "#ef4444" : "#666",
-          boxShadow: hasHands ? "0 0 8px #ef4444" : "none",
-          animation: hasHands ? "pulse 1.5s ease-in-out infinite" : "none",
+          background: dotColor,
+          boxShadow: isLive ? `0 0 8px ${dotColor}` : "none",
+          animation: isLive ? "pulse 1.5s ease-in-out infinite" : "none",
         }}
       />
       <span
         style={{
           fontSize: 10,
           fontFamily: "monospace",
-          color: hasHands ? "rgba(252, 165, 165, 0.9)" : "rgba(255,255,255,0.3)",
+          color: textColor,
           letterSpacing: "0.02em",
         }}
       >
-        {hasHands ? "smile, you're on camera" : "camera standby"}
+        {label}
       </span>
       <style>{`
         @keyframes pulse {
