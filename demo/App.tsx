@@ -1,24 +1,20 @@
 /**
- * thor.gl demo — Deck.gl globe with hand gesture controls.
+ * thor.gl demo — Three output channels in action.
  *
- * Gestures:
- * - Pinch + drag (1 hand) -> pan
- * - Pinch (2 hands) -> zoom
- * - Pinch + twist (2 hands) -> rotate bearing
- * - Open palm -> stop inertia
- * - Fist (hold 300ms) -> fire action callback
+ * NAVIGATION:  pinch-pan, pinch-zoom, pinch-rotate, pinch-pitch, fist
+ * PICKING:     hand-point → highlight cities, gaze → hover
+ * SIGNALS:     fist → projection toggle, open-palm → toast, gesture log
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import DeckGL from "@deck.gl/react";
 import { _GlobeView as GlobeView, MapView } from "@deck.gl/core";
 import { TileLayer } from "@deck.gl/geo-layers";
-import { BitmapLayer } from "@deck.gl/layers";
+import { BitmapLayer, ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import {
   useThor,
   setFistAction,
   listGestures,
-  getActiveMode,
   type ViewState,
   type ThorFrame,
   type EngineHandle,
@@ -29,9 +25,9 @@ import {
 type InputMode = "mjolnir" | "thor";
 
 const INITIAL_VIEW: ViewState = {
-  longitude: -100,
-  latitude: 40,
-  zoom: 3,
+  longitude: -40,
+  latitude: 25,
+  zoom: 2.2,
   pitch: 0,
   bearing: 0,
 };
@@ -39,27 +35,152 @@ const INITIAL_VIEW: ViewState = {
 const TILE_URL =
   "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
 
+// ── City data for picking demo ──
+
+interface City {
+  name: string;
+  coordinates: [number, number];
+  population: number;
+}
+
+const CITIES: City[] = [
+  { name: "New York", coordinates: [-74.006, 40.7128], population: 8336 },
+  { name: "London", coordinates: [-0.1276, 51.5074], population: 8982 },
+  { name: "Tokyo", coordinates: [139.6917, 35.6895], population: 13960 },
+  { name: "Sydney", coordinates: [151.2093, -33.8688], population: 5312 },
+  { name: "Cairo", coordinates: [31.2357, 30.0444], population: 9540 },
+  { name: "Mumbai", coordinates: [72.8777, 19.076], population: 12442 },
+  { name: "Shanghai", coordinates: [121.4737, 31.2304], population: 24870 },
+  { name: "Lagos", coordinates: [3.3792, 6.5244], population: 15388 },
+  { name: "Mexico City", coordinates: [-99.1332, 19.4326], population: 9209 },
+  { name: "Moscow", coordinates: [37.6173, 55.7558], population: 12506 },
+  { name: "Rio de Janeiro", coordinates: [-43.1729, -22.9068], population: 6748 },
+  { name: "Paris", coordinates: [2.3522, 48.8566], population: 2161 },
+  { name: "Istanbul", coordinates: [28.9784, 41.0082], population: 15462 },
+  { name: "Buenos Aires", coordinates: [-58.3816, -34.6037], population: 3076 },
+  { name: "Nairobi", coordinates: [36.8219, -1.2921], population: 4397 },
+  { name: "Singapore", coordinates: [103.8198, 1.3521], population: 5686 },
+  { name: "Dubai", coordinates: [55.2708, 25.2048], population: 3490 },
+  { name: "Bangkok", coordinates: [100.5018, 13.7563], population: 10539 },
+  { name: "Seoul", coordinates: [126.978, 37.5665], population: 9776 },
+  { name: "Cape Town", coordinates: [18.4241, -33.9249], population: 4618 },
+];
+
+// ── Toast system ──
+
+interface Toast {
+  id: number;
+  text: string;
+  color: string;
+  ts: number;
+}
+
+let toastId = 0;
+
+// ── Event log ──
+
+interface LogEntry {
+  id: number;
+  gesture: string;
+  channel: "nav" | "pick" | "signal";
+  ts: number;
+}
+
+let logId = 0;
+
+// ── App ──
+
 export function App() {
   const [viewState, setViewState] = useState<ViewState>(INITIAL_VIEW);
   const [inputMode, setInputMode] = useState<InputMode>("mjolnir");
   const [projection, setProjection] = useState<"globe" | "mercator">("globe");
   const [showDebug, setShowDebug] = useState(false);
+  const [hoveredCity, setHoveredCity] = useState<string | null>(null);
+  const [selectedCity, setSelectedCity] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [eventLog, setEventLog] = useState<LogEntry[]>([]);
 
-  // Wire fist gesture -> projection toggle
+  // Helpers
+  const addToast = useCallback((text: string, color: string) => {
+    const t: Toast = { id: ++toastId, text, color, ts: Date.now() };
+    setToasts((prev) => [t, ...prev].slice(0, 5));
+    setTimeout(() => setToasts((prev) => prev.filter((x) => x.id !== t.id)), 2500);
+  }, []);
+
+  const addLog = useCallback((gesture: string, channel: LogEntry["channel"]) => {
+    const entry: LogEntry = { id: ++logId, gesture, channel, ts: Date.now() };
+    setEventLog((prev) => [entry, ...prev].slice(0, 30));
+  }, []);
+
+  // Wire fist → projection toggle
   useEffect(() => {
     setFistAction(() => {
-      setProjection((p) => (p === "globe" ? "mercator" : "globe"));
+      setProjection((p) => {
+        const next = p === "globe" ? "mercator" : "globe";
+        addToast(`${next.toUpperCase()}`, "rgba(168, 85, 247, 0.9)");
+        addLog("fist", "signal");
+        return next;
+      });
     });
-  }, []);
+  }, [addToast, addLog]);
 
   // Thor gesture control
   const { widgets: thorWidgets, getEngine } = useThor({
-    setViewState: setViewState as React.Dispatch<
-      React.SetStateAction<ViewState>
-    >,
+    setViewState: setViewState as React.Dispatch<React.SetStateAction<ViewState>>,
     detector: "hands",
     enabled: inputMode === "thor",
   });
+
+  // Track gestures for event log + toasts
+  const prevGesturesRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (inputMode !== "thor") return;
+
+    let rafId = 0;
+    function tick() {
+      const engine = getEngine();
+      if (engine) {
+        const active = engine.getActiveGestureNames();
+        const activeSet = new Set(active);
+        const prev = prevGesturesRef.current;
+
+        // Detect newly activated gestures
+        for (const g of active) {
+          if (!prev.has(g)) {
+            // Navigation gestures
+            if (["pinch-pan", "pinch-zoom", "pinch-rotate", "pinch-pitch"].includes(g)) {
+              addLog(g, "nav");
+            }
+            // Signal gestures
+            if (g === "open-palm") {
+              addToast("OPEN PALM", "rgba(34, 197, 94, 0.9)");
+              addLog(g, "signal");
+            }
+            if (g === "fist") {
+              addLog(g, "signal");
+            }
+          }
+        }
+
+        // Hand-point picking: index fingertip near a city = highlight
+        const frame = engine.getLatestFrame();
+        if (frame && frame.hands.length > 0) {
+          const hand = frame.hands[0];
+          const indexTip = hand?.[8]; // HAND.INDEX_TIP
+          if (indexTip) {
+            // We'll let the ScatterplotLayer's onHover handle actual picking
+            // but log when hand is present for the event log
+          }
+        }
+
+        prevGesturesRef.current = activeSet;
+      }
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [inputMode, getEngine, addToast, addLog]);
 
   const onViewStateChange = useCallback(
     ({ viewState: vs }: { viewState: Record<string, unknown> }) => {
@@ -67,6 +188,8 @@ export function App() {
     },
     []
   );
+
+  // ── Layers ──
 
   const tileLayer = new TileLayer({
     id: "satellite-tiles",
@@ -78,8 +201,79 @@ export function App() {
       new BitmapLayer(props, {
         data: undefined,
         image: props.data,
-        bounds: [props.tile.boundingBox[0][0], props.tile.boundingBox[0][1], props.tile.boundingBox[1][0], props.tile.boundingBox[1][1]],
+        bounds: [
+          props.tile.boundingBox[0][0],
+          props.tile.boundingBox[0][1],
+          props.tile.boundingBox[1][0],
+          props.tile.boundingBox[1][1],
+        ],
       }),
+  });
+
+  const cityLayer = new ScatterplotLayer<City>({
+    id: "cities",
+    data: CITIES,
+    pickable: true,
+    getPosition: (d) => d.coordinates,
+    getRadius: (d) => Math.sqrt(d.population) * 800,
+    getFillColor: (d) => {
+      if (d.name === selectedCity) return [168, 85, 247, 220];
+      if (d.name === hoveredCity) return [245, 158, 11, 200];
+      return [255, 255, 255, 100];
+    },
+    getLineColor: (d) => {
+      if (d.name === selectedCity) return [168, 85, 247, 255];
+      if (d.name === hoveredCity) return [245, 158, 11, 255];
+      return [255, 255, 255, 60];
+    },
+    stroked: true,
+    lineWidthMinPixels: 1,
+    radiusMinPixels: 4,
+    radiusMaxPixels: 40,
+    updateTriggers: {
+      getFillColor: [hoveredCity, selectedCity],
+      getLineColor: [hoveredCity, selectedCity],
+    },
+    onHover: (info: any) => {
+      const name = info.object?.name ?? null;
+      if (name !== hoveredCity) {
+        setHoveredCity(name);
+        if (name && inputMode === "thor") {
+          addLog(`pick: ${name}`, "pick");
+        }
+      }
+    },
+    onClick: (info: any) => {
+      if (info.object) {
+        setSelectedCity((prev) =>
+          prev === info.object.name ? null : info.object.name
+        );
+        addToast(`SELECTED: ${info.object.name}`, "rgba(168, 85, 247, 0.9)");
+        addLog(`select: ${info.object.name}`, "pick");
+      }
+    },
+  });
+
+  const labelLayer = new TextLayer<City>({
+    id: "city-labels",
+    data: CITIES,
+    getPosition: (d) => d.coordinates,
+    getText: (d) => d.name,
+    getSize: (d) => (d.name === hoveredCity || d.name === selectedCity ? 14 : 11),
+    getColor: (d) => {
+      if (d.name === selectedCity) return [168, 85, 247, 255];
+      if (d.name === hoveredCity) return [245, 158, 11, 255];
+      return [255, 255, 255, 140];
+    },
+    getPixelOffset: [0, -20],
+    fontFamily: "monospace",
+    fontWeight: "bold",
+    outlineWidth: 2,
+    outlineColor: [0, 0, 0, 200],
+    updateTriggers: {
+      getSize: [hoveredCity, selectedCity],
+      getColor: [hoveredCity, selectedCity],
+    },
   });
 
   const view =
@@ -93,7 +287,7 @@ export function App() {
         views={view}
         viewState={viewState}
         onViewStateChange={onViewStateChange as any}
-        layers={[tileLayer]}
+        layers={[tileLayer, cityLayer, labelLayer]}
         widgets={inputMode === "thor" ? thorWidgets : undefined}
         parameters={{ cull: true }}
         controller={{ touchRotate: false, touchZoom: true, dragPan: true }}
@@ -106,13 +300,42 @@ export function App() {
       />
 
       {/* Gesture indicators */}
-      {inputMode === "thor" && (
-        <GestureIndicators getEngine={getEngine} />
-      )}
+      {inputMode === "thor" && <GestureIndicators getEngine={getEngine} />}
 
       {/* Debug overlay */}
       {inputMode === "thor" && showDebug && (
         <CameraOverlay getEngine={getEngine} />
+      )}
+
+      {/* Event log */}
+      {inputMode === "thor" && <EventLog entries={eventLog} />}
+
+      {/* Toasts */}
+      <ToastStack toasts={toasts} />
+
+      {/* Hovered city info */}
+      {hoveredCity && (
+        <div
+          style={{
+            position: "absolute",
+            top: 16,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 50,
+            padding: "6px 16px",
+            borderRadius: 999,
+            background: "rgba(245, 158, 11, 0.15)",
+            border: "1px solid rgba(245, 158, 11, 0.3)",
+            color: "rgba(253, 230, 138, 1)",
+            fontSize: 13,
+            fontFamily: "monospace",
+            fontWeight: 500,
+            backdropFilter: "blur(12px)",
+          }}
+        >
+          {hoveredCity}
+          {inputMode === "thor" ? " (hand pick)" : ""}
+        </div>
       )}
 
       {/* Bottom bar */}
@@ -158,6 +381,27 @@ export function App() {
         </div>
       </div>
 
+      {/* Channel legend + camera indicator */}
+      {inputMode === "thor" && (
+        <div
+          style={{
+            position: "absolute",
+            top: 16,
+            left: 16,
+            zIndex: 40,
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+          }}
+        >
+          <CameraIndicator getEngine={getEngine} />
+          <div style={{ height: 4 }} />
+          <ChannelBadge color="#3b82f6" label="NAV" desc="pinch gestures" />
+          <ChannelBadge color="#f59e0b" label="PICK" desc="hover cities" />
+          <ChannelBadge color="#a855f7" label="SIGNAL" desc="fist / palm" />
+        </div>
+      )}
+
       {/* Attribution */}
       <a
         href="https://newheat.co"
@@ -176,6 +420,265 @@ export function App() {
       >
         built by NEWHEAT
       </a>
+    </div>
+  );
+}
+
+// ── Camera indicator ──
+
+function CameraIndicator({
+  getEngine,
+}: {
+  getEngine: () => EngineHandle | null;
+}) {
+  const [hasHands, setHasHands] = useState(false);
+
+  useEffect(() => {
+    let rafId = 0;
+    function tick() {
+      const engine = getEngine();
+      const frame = engine?.getLatestFrame();
+      setHasHands((frame?.hands.length ?? 0) > 0);
+      rafId = requestAnimationFrame(tick);
+    }
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [getEngine]);
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "5px 10px",
+        borderRadius: 8,
+        background: "rgba(0,0,0,0.6)",
+        backdropFilter: "blur(12px)",
+        border: hasHands
+          ? "1px solid rgba(239, 68, 68, 0.4)"
+          : "1px solid rgba(255,255,255,0.06)",
+      }}
+    >
+      <span
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: hasHands ? "#ef4444" : "#666",
+          boxShadow: hasHands ? "0 0 8px #ef4444" : "none",
+          animation: hasHands ? "pulse 1.5s ease-in-out infinite" : "none",
+        }}
+      />
+      <span
+        style={{
+          fontSize: 10,
+          fontFamily: "monospace",
+          color: hasHands ? "rgba(252, 165, 165, 0.9)" : "rgba(255,255,255,0.3)",
+          letterSpacing: "0.02em",
+        }}
+      >
+        {hasHands ? "smile, you're on camera" : "camera standby"}
+      </span>
+      <style>{`
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ── Channel badge ──
+
+function ChannelBadge({
+  color,
+  label,
+  desc,
+}: {
+  color: string;
+  label: string;
+  desc: string;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 6,
+        padding: "3px 8px",
+        borderRadius: 6,
+        background: "rgba(0,0,0,0.5)",
+        backdropFilter: "blur(12px)",
+        border: `1px solid ${color}33`,
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: "50%",
+          background: color,
+        }}
+      />
+      <span
+        style={{
+          fontSize: 9,
+          fontFamily: "monospace",
+          fontWeight: 600,
+          color,
+          letterSpacing: "0.05em",
+        }}
+      >
+        {label}
+      </span>
+      <span
+        style={{
+          fontSize: 9,
+          fontFamily: "monospace",
+          color: "rgba(255,255,255,0.3)",
+        }}
+      >
+        {desc}
+      </span>
+    </div>
+  );
+}
+
+// ── Toast stack ──
+
+function ToastStack({ toasts }: { toasts: Toast[] }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 80,
+        right: 16,
+        zIndex: 60,
+        display: "flex",
+        flexDirection: "column-reverse",
+        gap: 6,
+      }}
+    >
+      {toasts.map((t) => {
+        const age = Date.now() - t.ts;
+        const opacity = age < 200 ? age / 200 : age > 2000 ? 1 - (age - 2000) / 500 : 1;
+        return (
+          <div
+            key={t.id}
+            style={{
+              padding: "6px 14px",
+              borderRadius: 8,
+              background: t.color,
+              color: "white",
+              fontSize: 12,
+              fontFamily: "monospace",
+              fontWeight: 600,
+              letterSpacing: "0.05em",
+              opacity: Math.max(0, opacity),
+              transform: `translateX(${age < 200 ? 20 - (age / 200) * 20 : 0}px)`,
+              transition: "opacity 200ms, transform 200ms",
+              backdropFilter: "blur(8px)",
+              boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+            }}
+          >
+            {t.text}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Event log ──
+
+function EventLog({ entries }: { entries: LogEntry[] }) {
+  const CHANNEL_COLORS: Record<string, string> = {
+    nav: "#3b82f6",
+    pick: "#f59e0b",
+    signal: "#a855f7",
+  };
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 80,
+        left: 16,
+        zIndex: 50,
+        width: 200,
+        maxHeight: 240,
+        overflow: "hidden",
+        borderRadius: 8,
+        background: "rgba(0,0,0,0.6)",
+        backdropFilter: "blur(16px)",
+        border: "1px solid rgba(255,255,255,0.06)",
+        padding: "6px 0",
+      }}
+    >
+      <div
+        style={{
+          padding: "0 8px 4px",
+          fontSize: 9,
+          fontFamily: "monospace",
+          color: "rgba(255,255,255,0.25)",
+          letterSpacing: "0.1em",
+          textTransform: "uppercase",
+        }}
+      >
+        event log
+      </div>
+      {entries.length === 0 && (
+        <div
+          style={{
+            padding: "8px",
+            fontSize: 10,
+            fontFamily: "monospace",
+            color: "rgba(255,255,255,0.2)",
+            textAlign: "center",
+          }}
+        >
+          waiting for gestures...
+        </div>
+      )}
+      {entries.slice(0, 15).map((e) => (
+        <div
+          key={e.id}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "2px 8px",
+            fontSize: 10,
+            fontFamily: "monospace",
+          }}
+        >
+          <span
+            style={{
+              width: 4,
+              height: 4,
+              borderRadius: "50%",
+              background: CHANNEL_COLORS[e.channel] ?? "#666",
+              flexShrink: 0,
+            }}
+          />
+          <span
+            style={{
+              color: CHANNEL_COLORS[e.channel] ?? "#888",
+              fontWeight: 500,
+              fontSize: 8,
+              width: 30,
+              flexShrink: 0,
+            }}
+          >
+            {e.channel.toUpperCase()}
+          </span>
+          <span style={{ color: "rgba(255,255,255,0.5)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {e.gesture}
+          </span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -207,14 +710,14 @@ const GESTURE_INFO: Record<
     effect: "Changes map pitch",
   },
   "open-palm": {
-    desc: "Stop / reset",
+    desc: "Stop / signal",
     input: "Show open palm",
-    effect: "Kills inertia",
+    effect: "Kills inertia, fires signal",
   },
   fist: {
     desc: "Toggle globe / mercator",
     input: "Make a fist (hold 300ms)",
-    effect: "Switches projection",
+    effect: "Switches projection (SIGNAL)",
   },
 };
 
@@ -360,7 +863,11 @@ const HAND_CONNECTIONS: [number, number][] = [
   [HAND.RING_MCP, HAND.PINKY_MCP],
 ];
 
-function CameraOverlay({ getEngine }: { getEngine: () => EngineHandle | null }) {
+function CameraOverlay({
+  getEngine,
+}: {
+  getEngine: () => EngineHandle | null;
+}) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const W = 320;
   const H = 240;
@@ -393,7 +900,6 @@ function CameraOverlay({ getEngine }: { getEngine: () => EngineHandle | null }) 
       ctx.fillStyle = "rgba(0,0,0,0.85)";
       ctx.fillRect(0, 0, W, H);
 
-      // Mirror
       ctx.save();
       ctx.translate(W, 0);
       ctx.scale(-1, 1);
@@ -456,7 +962,7 @@ function CameraOverlay({ getEngine }: { getEngine: () => EngineHandle | null }) 
     <div
       style={{
         position: "fixed",
-        bottom: 80,
+        bottom: 330,
         left: 16,
         zIndex: 50,
         borderRadius: 12,
@@ -465,7 +971,10 @@ function CameraOverlay({ getEngine }: { getEngine: () => EngineHandle | null }) 
         boxShadow: "0 25px 50px rgba(0,0,0,0.5)",
       }}
     >
-      <canvas ref={canvasRef} style={{ width: W, height: H, display: "block" }} />
+      <canvas
+        ref={canvasRef}
+        style={{ width: W, height: H, display: "block" }}
+      />
     </div>
   );
 }
@@ -477,14 +986,14 @@ function HintText({ inputMode }: { inputMode: InputMode }) {
 
   useEffect(() => {
     setVisible(true);
-    const timer = setTimeout(() => setVisible(false), 3000);
+    const timer = setTimeout(() => setVisible(false), 4000);
     return () => clearTimeout(timer);
   }, [inputMode]);
 
   const text =
     inputMode === "mjolnir"
-      ? "Drag to pan, scroll to zoom"
-      : "Pinch to pan \u00b7 Two hands to zoom \u00b7 Fist to switch projection";
+      ? "Drag to pan, scroll to zoom. Click cities to select."
+      : "Pinch to navigate \u00b7 Hover cities \u00b7 Fist to switch projection \u00b7 Open palm to signal";
 
   return (
     <span
@@ -544,7 +1053,9 @@ function InputModeToggle({
               cursor: "pointer",
               transition: "all 200ms",
               background: active ? "rgba(255,255,255,0.1)" : "transparent",
-              color: active ? "rgba(255,255,255,0.8)" : "rgba(255,255,255,0.3)",
+              color: active
+                ? "rgba(255,255,255,0.8)"
+                : "rgba(255,255,255,0.3)",
               fontWeight: active ? 500 : 400,
             }}
           >
