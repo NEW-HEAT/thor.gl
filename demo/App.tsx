@@ -39,9 +39,8 @@ import {
 } from "thor.gl";
 
 // ── Register face & pose gestures (not auto-registered) ──
-registerGesture(gaze, { priority: 10, group: "gaze" });
+// gaze, head-tilt, lean are NOT registered — TBD, see issue #3
 registerGesture(blink, { priority: 12, group: "action" });
-// head-tilt and lean are NOT registered — TBD, too flakey for nav currently
 
 type InputMode = "mjolnir" | "thor";
 
@@ -1074,10 +1073,10 @@ const GESTURE_INFO: Record<
     channel: CHANNEL_SIGNAL,
   },
   gaze: {
-    desc: "Eye tracking cursor (experimental)",
-    input: "Look at screen (iris position)",
-    effect: "Blue cursor tracks gaze — assumes laptop webcam",
-    channel: CHANNEL_PICK,
+    desc: "Eye tracking cursor (TBD)",
+    input: "Iris + head pose estimation",
+    effect: "Needs better calibration model — see issue #3",
+    channel: { label: "TBD", color: "#666" },
   },
   blink: {
     desc: "Blink to select",
@@ -1129,7 +1128,7 @@ function GestureIndicators({
   });
   const [expanded, setExpanded] = useState<string | null>(null);
   const [disabledGestures, setDisabledGestures] = useState<Set<string>>(
-    new Set(["head-tilt", "lean"]) // TBD — not registered at startup
+    new Set(["head-tilt", "lean", "gaze"]) // TBD — not registered at startup
   );
 
   useEffect(() => {
