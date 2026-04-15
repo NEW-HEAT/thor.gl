@@ -10,7 +10,7 @@ const useHttps = !!process.env.HTTPS;
 export default defineConfig({
   plugins: [react(), ...(useHttps ? [basicSsl()] : [])],
   root: __dirname,
-  base: process.env.GITHUB_ACTIONS ? "/thor.gl/" : "/",
+  base: "/",
   resolve: {
     alias: {
       // Local source

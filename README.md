@@ -2,7 +2,7 @@
 
 [Mjolnir](https://github.com/visgl/mjolnir.js) for Humans. Hand, face, and pose gesture control for [deck.gl](https://deck.gl).
 
-**[Live Demo](https://new-heat.github.io/thor.gl/)** | [RFC](https://github.com/NEW-HEAT/thor.gl/issues/1) | Built by [NEWHEAT](https://newheat.co)
+**[Live Demo](https://thor.gl)** | [RFC](https://github.com/NEW-HEAT/thor.gl/issues/1) | Built by [NEWHEAT](https://newheat.co)
 
 ## Demo
 
