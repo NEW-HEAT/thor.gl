@@ -70,6 +70,8 @@ export { pinchRotate } from "./gestures/hand/pinch-rotate";
 export { pinchPitch } from "./gestures/hand/pinch-pitch";
 export { openPalm } from "./gestures/hand/open-palm";
 export { fist, setFistAction } from "./gestures/hand/fist";
+export { fingergun, getFingergUnLastDetection } from "./gestures/hand/fingergun";
+export { fourFinger, getFourFingerLastDetection } from "./gestures/hand/four-finger";
 export { headTilt } from "./gestures/face/head-tilt";
 export { gaze } from "./gestures/face/gaze";
 export { blink } from "./gestures/face/blink";
@@ -80,3 +82,18 @@ export { createEngine, type EngineConfig, type EngineHandle } from "./engine";
 
 // ── Utilities ──
 export { hideCursor, showCursor } from "./util/pointer-emulation";
+
+// ── Thor class (framework-agnostic orchestrator) ──
+export { Thor, type ThorOptions, type ThorDetectorConfig } from "./thor";
+
+// ── Emit layer ──
+export { SignalEmitter, type ThorSignalMap, type HandSignalData } from "./emit/signals";
+export { dispatchPickEvent, type DeckLike, type PickInfo } from "./emit/picking";
+export {
+  emitMjolnirEvent,
+  emitPanEvent,
+  emitZoomEvent,
+  emitRotateEvent,
+  type MjolnirEventLike,
+} from "./emit/navigation";
+export { PICK_EVENT_TO_CALLBACK } from "./emit/events";

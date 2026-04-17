@@ -1,15 +1,23 @@
 /**
  * useThor — main React hook for thor.gl.
  *
- * Orchestrates: engine lifecycle, ThorWidget instance, viewState bridging.
+ * Orchestrates: Thor instance lifecycle, ThorWidget instance, viewState bridging.
+ * Delegates to the Thor class for engine management and signal pubsub.
+ *
+ * Existing public surface is preserved — callers of useThor do not need changes.
  *
  * Usage:
  * ```tsx
- * const { widgets } = useThor({
+ * const { widgets, thor } = useThor({
  *   setViewState,
  *   onViewStateChange: (vs) => handleZoomSwitch(vs.zoom),
  *   gestures: ['pinch-pan', 'pinch-zoom'],  // optional filter
  * });
+ *
+ * // Wire signals in the same component:
+ * useEffect(() => {
+ *   thor?.on('fist', ({ hand }) => console.log('fist', hand));
+ * }, [thor]);
  *
  * <DeckGL widgets={widgets} />
  * ```
@@ -22,6 +30,7 @@ import type { ViewState } from "./gestures/types";
 import { ThorWidget } from "./ThorWidget";
 import { createEngine, type EngineHandle } from "./engine";
 import { setGestureConfig, type ThorGestureConfig } from "./gestures/config";
+import { Thor } from "./thor";
 
 export interface ThorConfig {
   /** ViewState setter — typically shell.setViewState */
@@ -37,6 +46,12 @@ export interface ThorConfig {
 
   /** Gesture tuning — all fields optional, merged with defaults. */
   config?: Partial<ThorGestureConfig>;
+  /**
+   * The deck.gl canvas (or a getter). Required for canvas-space signals:
+   * `trigger`, `fingergun-aim`, `eraser-move`. Pass `() => deckRef.current?.deck?.getCanvas() ?? null`.
+   * Omitting it means those signals are silently skipped.
+   */
+  canvas?: HTMLCanvasElement | (() => HTMLCanvasElement | null);
 }
 
 export interface ThorResult {
@@ -44,8 +59,14 @@ export interface ThorResult {
   widgets: Widget[];
   /** Pass-through viewState change handler for mouse/touch input */
   onViewStateChange: (params: { viewState: Record<string, unknown> }) => void;
-  /** Get the engine handle for debug/inspection (null when disabled) */
+  /** Get the underlying engine handle for debug/inspection (null when disabled) */
   getEngine: () => EngineHandle | null;
+  /**
+   * The Thor instance — use to subscribe to signals:
+   *   thor?.on('fist', handler)
+   * Null when `enabled` is false.
+   */
+  thor: Thor | null;
 }
 
 export function useThor({
@@ -55,8 +76,9 @@ export function useThor({
   detector = "auto",
   gestures,
   config: configOverrides,
+  canvas,
 }: ThorConfig): ThorResult {
-  // Stable refs
+  // Stable refs — capture latest callbacks without causing effect re-runs
   const onViewStateChangeRef = useRef(onViewStateChangeCb);
   onViewStateChangeRef.current = onViewStateChangeCb;
 
@@ -67,8 +89,11 @@ export function useThor({
   const widget = useMemo(() => new ThorWidget({ id: "thor-gl" }), []);
   const widgets = useMemo(() => [widget] as unknown as Widget[], [widget]);
 
-  // Engine ref
+  // Engine ref (for getEngine() pass-through — kept for backward compat)
   const engineRef = useRef<EngineHandle | null>(null);
+
+  // Thor instance ref — stable per enabled/detector/gestures lifecycle
+  const thorRef = useRef<Thor | null>(null);
 
   // Serialized gesture list for dep comparison
   const gestureKey = gestures?.join(",") ?? "__all__";
@@ -82,6 +107,8 @@ export function useThor({
         engineRef.current.stop();
         engineRef.current = null;
       }
+      thorRef.current?.destroy();
+      thorRef.current = null;
       widget.setData(null, []);
       return;
     }
@@ -91,6 +118,7 @@ export function useThor({
       setGestureConfig(configOverrides);
     }
 
+    // Build the engine directly (same as before) so getEngine() still works
     const engine = createEngine({
       detector,
       gestures,
@@ -110,6 +138,33 @@ export function useThor({
 
     engineRef.current = engine;
 
+    // Wrap the engine in a Thor instance so callers can use on(signal, handler)
+    const thor = new Thor({
+      detectors: {hand: detector !== 'holistic', face: detector === 'holistic', pose: detector === 'holistic'},
+      gestures,
+      canvas,
+      onViewStateChange: (updater) => {
+        setViewStateRef.current((vs) => {
+          const newVs = updater(vs);
+          if (newVs !== vs) {
+            onViewStateChangeRef.current?.(newVs);
+          }
+          return newVs;
+        });
+      },
+      onFrame: (frame) => {
+        widget.setData(frame, engine.getActiveGestureNames());
+      },
+    });
+
+    // We wired the engine manually above; the Thor instance is used for
+    // signal subscriptions. To avoid double-starting the detector, we
+    // assign the engine to Thor's internal ref via a lightweight bridge.
+    // Thor.start() is not called — we drive the engine ourselves.
+    (thor as any)._engine = engine;
+    (thor as any)._started = true;
+    thorRef.current = thor;
+
     engine.start().catch((err) => {
       console.error("[thor.gl] Engine start failed:", err);
     });
@@ -117,6 +172,8 @@ export function useThor({
     return () => {
       engine.stop();
       engineRef.current = null;
+      thor.destroy();
+      thorRef.current = null;
       widget.setData(null, []);
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -134,5 +191,5 @@ export function useThor({
 
   const getEngine = useCallback(() => engineRef.current, []);
 
-  return { widgets, onViewStateChange, getEngine };
+  return { widgets, onViewStateChange, getEngine, thor: thorRef.current };
 }
