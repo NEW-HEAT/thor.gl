@@ -1,10 +1,10 @@
 /**
- * thor.gl demo — Full RFC showcase.
+ * thor.gl demo — MVP computer-control surface.
  *
  * NAVIGATION:  pinch-pan, pinch-zoom, pinch-rotate, pinch-pitch, head-tilt, lean
- * PICKING:     gaze → hover cities, hand-point → highlight, blink → select
- * SIGNALS:     fist → projection toggle, open-palm → toast, gesture log
- * ATTENTION:   iris tracking → pause when not looking at screen
+ * PICKING:     index fingertip pointer → hover, pinch → select
+ * SIGNALS:     temple double-tap → AI voice, fist → projection toggle, open-palm → toast
+ * ATTENTION:   experimental iris tracking is kept off for the MVP deploy
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,24 +22,28 @@ import {
   headTilt,
   gaze,
   blink,
+  templeTap,
   lean,
   setGazeCalibration,
   getGazeCalibration,
   extractIrisPosition,
   extractHeadPose,
   fitCalibration,
-  FACE,
+  getIndexFingerPointer,
   type ViewState,
-  type ThorFrame,
   type EngineHandle,
   type CalibrationPoint,
   type CalibrationData,
+  type HandPointer,
   HAND,
   FINGERTIPS,
 } from "thor.gl";
 
 // ── Register face & pose gestures (not auto-registered) ──
+registerGesture(templeTap, { priority: 40, group: "action" });
 // gaze, blink, head-tilt, lean are NOT registered — TBD, see issue #3
+
+const SHOW_EXPERIMENTAL_GAZE = false;
 
 type InputMode = "mjolnir" | "thor";
 
@@ -107,6 +111,14 @@ interface LogEntry {
 
 let logId = 0;
 
+interface VoiceChatState {
+  open: boolean;
+  listening: boolean;
+  transcript: string;
+  interim: string;
+  error: string | null;
+}
+
 // ── App ──
 
 export function App() {
@@ -120,6 +132,19 @@ export function App() {
   const [eventLog, setEventLog] = useState<LogEntry[]>([]);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [showCalibration, setShowCalibration] = useState(false);
+  const [handPointer, setHandPointer] = useState<HandPointer | null>(null);
+  const [voiceChat, setVoiceChat] = useState<VoiceChatState>({
+    open: false,
+    listening: false,
+    transcript: "",
+    interim: "",
+    error: null,
+  });
+  const deckRef = useRef<any>(null);
+  const recognitionRef = useRef<any>(null);
+  const pointerHoverRef = useRef<string | null>(null);
+  const wasPointerSelectingRef = useRef(false);
+  const lastPointerSelectAt = useRef(0);
 
   // Check camera when switching to thor mode
   useEffect(() => {
@@ -177,6 +202,86 @@ export function App() {
     setEventLog((prev) => [entry, ...prev].slice(0, 30));
   }, []);
 
+  const startVoiceChat = useCallback(() => {
+    setVoiceChat((prev) => ({
+      ...prev,
+      open: true,
+      listening: true,
+      interim: "",
+      error: null,
+    }));
+
+    const SpeechRecognitionCtor =
+      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognitionCtor) {
+      setVoiceChat((prev) => ({
+        ...prev,
+        listening: false,
+        error: "Speech recognition is not available in this browser.",
+      }));
+      return;
+    }
+
+    try {
+      recognitionRef.current?.stop?.();
+      const recognition = new SpeechRecognitionCtor();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
+
+      recognition.onresult = (event: any) => {
+        let finalText = "";
+        let interimText = "";
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const text = event.results[i][0]?.transcript ?? "";
+          if (event.results[i].isFinal) {
+            finalText += text;
+          } else {
+            interimText += text;
+          }
+        }
+
+        setVoiceChat((prev) => ({
+          ...prev,
+          transcript: finalText ? `${prev.transcript} ${finalText}`.trim() : prev.transcript,
+          interim: interimText.trim(),
+        }));
+      };
+
+      recognition.onerror = (event: any) => {
+        setVoiceChat((prev) => ({
+          ...prev,
+          listening: false,
+          error: event.error ? `Speech error: ${event.error}` : "Speech capture failed.",
+        }));
+      };
+
+      recognition.onend = () => {
+        setVoiceChat((prev) => ({ ...prev, listening: false, interim: "" }));
+      };
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch (err: any) {
+      setVoiceChat((prev) => ({
+        ...prev,
+        listening: false,
+        error: err?.message ?? "Speech capture could not start.",
+      }));
+    }
+  }, []);
+
+  const closeVoiceChat = useCallback(() => {
+    recognitionRef.current?.stop?.();
+    setVoiceChat((prev) => ({ ...prev, open: false, listening: false, interim: "" }));
+  }, []);
+
+  useEffect(() => {
+    return () => recognitionRef.current?.stop?.();
+  }, []);
+
   // Wire fist → projection toggle
   useEffect(() => {
     setFistAction(() => {
@@ -189,10 +294,10 @@ export function App() {
     });
   }, [addToast, addLog]);
 
-  // Thor gesture control — holistic mode for hands + face + pose
+  // Thor gesture control — auto promotes to hand + face for temple-tap
   const { widgets: thorWidgets, getEngine } = useThor({
     setViewState: setViewState as React.Dispatch<React.SetStateAction<ViewState>>,
-    detector: "holistic",
+    detector: "auto",
     enabled: inputMode === "thor",
   });
 
@@ -203,15 +308,18 @@ export function App() {
   const attentionLostAt = useRef<number | null>(null);
   const ATTENTION_DELAY = 1500; // ms before showing "pay attention" overlay
 
-  // Track gestures for event log, toasts, gaze picking, attention
+  // Track gestures for event log, toasts, pointer picking, and voice activation
   const prevGesturesRef = useRef<Set<string>>(new Set());
   const gazeHoveredRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (inputMode !== "thor") {
       setGazePos(null);
+      setHandPointer(null);
       setIsAttentive(true);
       attentionLostAt.current = null;
+      pointerHoverRef.current = null;
+      wasPointerSelectingRef.current = false;
       return;
     }
 
@@ -228,8 +336,50 @@ export function App() {
       const prev = prevGesturesRef.current;
       const frame = engine.getLatestFrame();
 
+      // ── Index finger pointer + pinch select ──
+      const pointer = frame
+        ? getIndexFingerPointer(frame, {
+            width: window.innerWidth,
+            height: window.innerHeight,
+          })
+        : null;
+      setHandPointer(pointer);
+
+      if (pointer) {
+        const deck = deckRef.current?.deck ?? deckRef.current;
+        const info =
+          deck && typeof deck.pickObject === "function"
+            ? deck.pickObject({ x: pointer.x, y: pointer.y, radius: 18 })
+            : null;
+        const name = info?.object?.name ?? null;
+
+        if (name !== pointerHoverRef.current) {
+          pointerHoverRef.current = name;
+          setHoveredCity(name);
+          if (name) addLog(`point: ${name}`, "pick");
+        }
+
+        const now = Date.now();
+        if (
+          pointer.selecting &&
+          !wasPointerSelectingRef.current &&
+          name &&
+          now - lastPointerSelectAt.current > 450
+        ) {
+          lastPointerSelectAt.current = now;
+          setSelectedCity((prevCity) => (prevCity === name ? null : name));
+          addToast(`SELECTED: ${name}`, "rgba(168, 85, 247, 0.9)");
+          addLog(`pinch-select: ${name}`, "pick");
+        }
+      } else if (pointerHoverRef.current !== null) {
+        pointerHoverRef.current = null;
+        setHoveredCity(null);
+      }
+
+      wasPointerSelectingRef.current = pointer?.selecting ?? false;
+
       // ── Gaze via model + attention gate ──
-      if (frame?.face && frame.face.length > 474) {
+      if (SHOW_EXPERIMENTAL_GAZE && frame?.face && frame.face.length > 474) {
         const iris = extractIrisPosition(frame.face);
         const headPose = extractHeadPose(frame.face);
 
@@ -263,7 +413,7 @@ export function App() {
             setIsAttentive(false);
           }
         }
-      } else if (!frame?.face) {
+      } else if (SHOW_EXPERIMENTAL_GAZE && !frame?.face) {
         setGazePos(null);
         if (!attentionLostAt.current) {
           attentionLostAt.current = Date.now();
@@ -301,6 +451,11 @@ export function App() {
               addLog(`blink-select: ${gazeHoveredRef.current}`, "pick");
             }
           }
+          if (g === "temple-tap") {
+            addToast("AI VOICE", "rgba(168, 85, 247, 0.9)");
+            addLog("temple-tap: voice", "signal");
+            startVoiceChat();
+          }
         }
       }
 
@@ -309,7 +464,7 @@ export function App() {
     }
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [inputMode, getEngine, addToast, addLog]);
+  }, [inputMode, getEngine, addToast, addLog, startVoiceChat]);
 
   const onViewStateChange = useCallback(
     ({ viewState: vs }: { viewState: Record<string, unknown> }) => {
@@ -413,12 +568,13 @@ export function App() {
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh" }}>
       <DeckGL
+        ref={deckRef}
         views={view}
         viewState={viewState}
         onViewStateChange={onViewStateChange as any}
         layers={[tileLayer, cityLayer, labelLayer]}
         widgets={inputMode === "thor" ? thorWidgets : undefined}
-        parameters={{ cull: true }}
+        parameters={{ cull: true } as any}
         controller={{ touchRotate: false, touchZoom: true, dragPan: true }}
         getCursor={
           inputMode === "thor"
@@ -496,7 +652,7 @@ export function App() {
       )}
 
       {/* Attention gate overlay */}
-      {inputMode === "thor" && !cameraError && !isAttentive && (
+      {SHOW_EXPERIMENTAL_GAZE && inputMode === "thor" && !cameraError && !isAttentive && (
         <div
           style={{
             position: "absolute",
@@ -558,7 +714,7 @@ export function App() {
       )}
 
       {/* Gaze cursor */}
-      {inputMode === "thor" && !cameraError && isAttentive && gazePos && (
+      {SHOW_EXPERIMENTAL_GAZE && inputMode === "thor" && !cameraError && isAttentive && gazePos && (
         <div
           style={{
             position: "absolute",
@@ -591,6 +747,11 @@ export function App() {
         </div>
       )}
 
+      {/* Hand pointer */}
+      {inputMode === "thor" && !cameraError && handPointer && (
+        <HandPointerCursor pointer={handPointer} />
+      )}
+
       {/* Gesture indicators */}
       {inputMode === "thor" && !cameraError && <GestureIndicators getEngine={getEngine} />}
 
@@ -601,6 +762,15 @@ export function App() {
 
       {/* Event log */}
       {inputMode === "thor" && !cameraError && <EventLog entries={eventLog} />}
+
+      {/* AI voice panel */}
+      {voiceChat.open && (
+        <VoicePanel
+          state={voiceChat}
+          onClose={closeVoiceChat}
+          onListen={startVoiceChat}
+        />
+      )}
 
       {/* Toasts */}
       <ToastStack toasts={toasts} />
@@ -649,27 +819,29 @@ export function App() {
           <InputModeToggle mode={inputMode} onChange={setInputMode} />
           {inputMode === "thor" && (
             <>
-              <button
-                onClick={() => setShowCalibration(true)}
-                style={{
-                  padding: "6px 10px",
-                  borderRadius: 999,
-                  border: getGazeCalibration()
-                    ? "1px solid rgba(59, 130, 246, 0.3)"
-                    : "1px solid rgba(255,255,255,0.06)",
-                  background: getGazeCalibration()
-                    ? "rgba(59, 130, 246, 0.2)"
-                    : "rgba(0,0,0,0.4)",
-                  color: getGazeCalibration()
-                    ? "rgba(147, 197, 253, 1)"
-                    : "rgba(255,255,255,0.3)",
-                  fontSize: 11,
-                  cursor: "pointer",
-                  backdropFilter: "blur(12px)",
-                }}
-              >
-                {getGazeCalibration() ? "recalibrate" : "calibrate gaze"}
-              </button>
+              {SHOW_EXPERIMENTAL_GAZE && (
+                <button
+                  onClick={() => setShowCalibration(true)}
+                  style={{
+                    padding: "6px 10px",
+                    borderRadius: 999,
+                    border: getGazeCalibration()
+                      ? "1px solid rgba(59, 130, 246, 0.3)"
+                      : "1px solid rgba(255,255,255,0.06)",
+                    background: getGazeCalibration()
+                      ? "rgba(59, 130, 246, 0.2)"
+                      : "rgba(0,0,0,0.4)",
+                    color: getGazeCalibration()
+                      ? "rgba(147, 197, 253, 1)"
+                      : "rgba(255,255,255,0.3)",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    backdropFilter: "blur(12px)",
+                  }}
+                >
+                  {getGazeCalibration() ? "recalibrate" : "calibrate gaze"}
+                </button>
+              )}
               <button
                 onClick={() => setShowDebug((d) => !d)}
                 style={{
@@ -712,8 +884,8 @@ export function App() {
           <CameraIndicator getEngine={getEngine} />
           <div style={{ height: 4 }} />
           <ChannelBadge color="#3b82f6" label="NAV" desc="pinch gestures" />
-          <ChannelBadge color="#f59e0b" label="PICK" desc="hover cities" />
-          <ChannelBadge color="#a855f7" label="SIGNAL" desc="fist / palm" />
+          <ChannelBadge color="#f59e0b" label="PICK" desc="finger pointer" />
+          <ChannelBadge color="#a855f7" label="SIGNAL" desc="temple / voice" />
         </div>
       )}
 
@@ -735,6 +907,155 @@ export function App() {
       >
         built by NEWHEAT
       </a>
+    </div>
+  );
+}
+
+// ── MVP pointer + voice surfaces ──
+
+function HandPointerCursor({ pointer }: { pointer: HandPointer }) {
+  const color = pointer.selecting ? "rgba(168, 85, 247, 0.95)" : "rgba(245, 158, 11, 0.95)";
+  const size = pointer.selecting ? 34 : 28;
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: pointer.x,
+        top: pointer.y,
+        width: size,
+        height: size,
+        transform: "translate(-50%, -50%)",
+        zIndex: 70,
+        pointerEvents: "none",
+        transition: "width 80ms ease-out, height 80ms ease-out, border-color 80ms ease-out",
+      }}
+    >
+      <div
+        style={{
+          position: "absolute",
+          inset: 0,
+          borderRadius: "50%",
+          border: `2px solid ${color}`,
+          background: pointer.selecting ? "rgba(168, 85, 247, 0.16)" : "rgba(245, 158, 11, 0.12)",
+          boxShadow: `0 0 18px ${color}`,
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          width: 5,
+          height: 5,
+          borderRadius: "50%",
+          transform: "translate(-50%, -50%)",
+          background: color,
+        }}
+      />
+    </div>
+  );
+}
+
+function VoicePanel({
+  state,
+  onClose,
+  onListen,
+}: {
+  state: VoiceChatState;
+  onClose: () => void;
+  onListen: () => void;
+}) {
+  const text = state.interim || state.transcript || "Listening for your command...";
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        right: 16,
+        bottom: 146,
+        zIndex: 80,
+        width: 320,
+        borderRadius: 10,
+        background: "rgba(10,10,10,0.82)",
+        backdropFilter: "blur(18px)",
+        border: "1px solid rgba(168, 85, 247, 0.32)",
+        boxShadow: "0 20px 50px rgba(0,0,0,0.45)",
+        overflow: "hidden",
+        fontFamily: "monospace",
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          padding: "9px 12px",
+          borderBottom: "1px solid rgba(255,255,255,0.06)",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span
+            style={{
+              width: 8,
+              height: 8,
+              borderRadius: "50%",
+              background: state.listening ? "#a855f7" : "rgba(255,255,255,0.25)",
+              boxShadow: state.listening ? "0 0 12px #a855f7" : "none",
+            }}
+          />
+          <span style={{ color: "rgba(255,255,255,0.78)", fontSize: 12, fontWeight: 700 }}>
+            AI Voice
+          </span>
+        </div>
+        <button
+          onClick={onClose}
+          aria-label="Close AI voice"
+          style={{
+            width: 22,
+            height: 22,
+            borderRadius: 6,
+            border: "1px solid rgba(255,255,255,0.08)",
+            background: "rgba(255,255,255,0.05)",
+            color: "rgba(255,255,255,0.55)",
+            cursor: "pointer",
+            lineHeight: "18px",
+          }}
+        >
+          x
+        </button>
+      </div>
+      <div style={{ padding: 12 }}>
+        <div
+          style={{
+            minHeight: 54,
+            color: state.error ? "rgba(252, 165, 165, 0.95)" : "rgba(255,255,255,0.72)",
+            fontSize: 12,
+            lineHeight: 1.45,
+          }}
+        >
+          {state.error ?? text}
+        </div>
+        {!state.listening && (
+          <button
+            onClick={onListen}
+            style={{
+              marginTop: 10,
+              padding: "7px 10px",
+              borderRadius: 8,
+              border: "1px solid rgba(168, 85, 247, 0.35)",
+              background: "rgba(168, 85, 247, 0.18)",
+              color: "rgba(233, 213, 255, 0.95)",
+              cursor: "pointer",
+              fontSize: 11,
+              fontFamily: "monospace",
+            }}
+          >
+            listen
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -1079,6 +1400,12 @@ const GESTURE_INFO: Record<
     effect: "Fires action callback (globe toggle)",
     channel: CHANNEL_SIGNAL,
   },
+  "temple-tap": {
+    desc: "AI voice trigger",
+    input: "Double-tap either temple with your index finger",
+    effect: "Opens AI voice capture",
+    channel: CHANNEL_SIGNAL,
+  },
   gaze: {
     desc: "Eye tracking cursor (TBD)",
     input: "Iris + head pose estimation",
@@ -1115,6 +1442,7 @@ const GESTURE_REGISTRY: Record<string, { handler: any; priority: number; group: 
   "pinch-pitch":  { handler: null, priority: 21, group: "pitch" },
   "open-palm":    { handler: null, priority: 5,  group: "signal" },
   "fist":         { handler: null, priority: 30, group: "action" },
+  "temple-tap":   { handler: templeTap, priority: 40, group: "action" },
   "gaze":         { handler: gaze, priority: 10, group: "gaze" },
   "blink":        { handler: blink, priority: 12, group: "action" },
   "head-tilt":    { handler: headTilt, priority: 15, group: "navigation" },
@@ -1383,7 +1711,7 @@ function CalibrationOverlay({
   const [currentDot, setCurrentDot] = useState(0);
   const [collecting, setCollecting] = useState(false);
   const [samples, setSamples] = useState<CalibrationPoint[]>([]);
-  const collectBuffer = useRef<{ irisX: number; irisY: number; headYaw: number; headPitch: number }[]>([]);
+  const collectBuffer = useRef<{ irisX: number; irisY: number; headYaw: number; headPitch: number; faceY: number }[]>([]);
   const SAMPLES_PER_DOT = 15; // Collect 15 frames (~0.5s at 30fps) per dot
 
   useEffect(() => {
@@ -1805,7 +2133,7 @@ function HintText({ inputMode }: { inputMode: InputMode }) {
   const text =
     inputMode === "mjolnir"
       ? "Drag to pan, scroll to zoom. Click cities to select."
-      : "Pinch to navigate \u00b7 Eyes track gaze \u00b7 Blink to select \u00b7 Fist to toggle \u00b7 Look away to pause";
+      : "Index finger points \u00b7 pinch selects \u00b7 double-tap temple opens AI voice";
 
   return (
     <span

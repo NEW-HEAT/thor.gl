@@ -6,7 +6,15 @@
     "noImplicitAny": false,
     "jsx": "react-jsx",
     "moduleResolution": "bundler",
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "thor.gl": ["../src/index.ts"],
+      "react": ["./node_modules/react"],
+      "react/*": ["./node_modules/react/*"],
+      "@deck.gl/core": ["./node_modules/@deck.gl/core"],
+      "@mediapipe/tasks-vision": ["./node_modules/@mediapipe/tasks-vision"]
+    }
   },
   "include": ["./**/*.ts", "./**/*.tsx"]
 }

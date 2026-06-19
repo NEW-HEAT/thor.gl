@@ -24,6 +24,8 @@ export const SIGNAL_EVENTS = [
   "wave",
   "thumbsup",
   "fingergun",
+  "temple-tap",
+  "pointerselect",
   "handenter",
   "handleave",
   "faceenter",

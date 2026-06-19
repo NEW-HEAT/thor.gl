@@ -39,6 +39,7 @@ export { fist, setFistAction } from "./hand/fist";
 export { headTilt } from "./face/head-tilt";
 export { gaze } from "./face/gaze";
 export { blink } from "./face/blink";
+export { templeTap } from "./face/temple-tap";
 export { lean } from "./pose/lean";
 
 // ── Register built-ins (hand gestures only — face/pose are opt-in exports) ──

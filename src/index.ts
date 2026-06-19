@@ -103,6 +103,7 @@ export {
   type HeadPose,
 } from "./gestures/face/gaze-model";
 export { blink } from "./gestures/face/blink";
+export { templeTap } from "./gestures/face/temple-tap";
 export { lean } from "./gestures/pose/lean";
 
 // ── Engine (advanced usage) ──
@@ -110,3 +111,9 @@ export { createEngine, type EngineConfig, type EngineHandle } from "./engine";
 
 // ── Utilities ──
 export { hideCursor, showCursor } from "./util/pointer-emulation";
+export {
+  getIndexFingerPointer,
+  type HandPointer,
+  type HandPointerOptions,
+  type PointerViewport,
+} from "./util/hand-pointer";
