@@ -1,20 +1,21 @@
 # thor.gl
 
-[Mjolnir](https://github.com/visgl/mjolnir.js) for Humans. Hand, face, and pose gesture control for [deck.gl](https://deck.gl).
+[Mjolnir](https://github.com/visgl/mjolnir.js) for Humans. ThorGL is a web-native computer-control layer for using hand, face, head, and voice gestures across maps, websites, AI chat, and desktop-control surfaces without reaching for the keyboard or mouse.
 
 **[Live Demo](https://thor.gl)** | [RFC](https://github.com/NEW-HEAT/thor.gl/issues/1) | Built by [NEWHEAT](https://newheat.co)
 
 ## Demo
 
-The live demo showcases all three output channels on a satellite globe with 20 pickable cities:
+The live demo showcases the first MVP gesture set on a satellite globe with 20 pickable cities:
 
 - **Navigation** — pinch-pan, pinch-zoom, pinch-rotate, pinch-pitch with hand gestures
-- **Picking** — hover and click cities to select
+- **Pointer + selection** — index fingertip becomes a screen pointer; pinch selects the pointed city
+- **AI voice activation** — double-tap either temple with an index finger to open voice capture
 - **Signals** — fist toggles globe/mercator, open-palm fires a toast notification
 
-Toggle between **Mjolnir** (mouse/touch) and **Thor** (hand tracking) modes. Gesture cards on the right show live status with channel tags — click the checkbox to enable/disable any gesture at runtime.
+Toggle between **Mjolnir** (mouse/touch) and **Thor** (camera gesture control) modes. Gesture cards on the right show live status with channel tags — click the checkbox to enable/disable any gesture at runtime.
 
-Additional demo features: live camera feed with hand skeleton overlay (debug panel), collapsible event log, camera indicator, attention gate (experimental), and 9-point gaze calibration flow (experimental).
+Additional demo features: live camera feed with hand skeleton overlay (debug panel), collapsible event log, camera indicator, and the experimental gaze calibration flow kept behind a feature flag.
 
 > Requires a webcam. For LAN access from another device: `HTTPS=1 npx vite --host`
 
@@ -31,7 +32,9 @@ npx vite --host
 ### React hook
 
 ```tsx
-import { useThor, setFistAction } from "thor.gl";
+import { useThor, setFistAction, registerGesture, templeTap } from "thor.gl";
+
+registerGesture(templeTap, { priority: 40, group: "action" });
 
 function MyMap() {
   const [viewState, setViewState] = useState(INITIAL_VIEW);
@@ -77,8 +80,11 @@ await thor.start();
 | `pinch-zoom` | Pinch (2 hands) apart/together | Zoom in/out | NAV |
 | `pinch-rotate` | Pinch (2 hands) + twist | Rotate bearing | NAV |
 | `pinch-pitch` | Pinch (2 hands) + move up/down | Tilt pitch | NAV |
+| `index-pointer` | Index fingertip visible | Screen pointer + hand-point picking | PICK |
+| `pinch-select` | Thumb-index pinch at pointer | Select/click pointed target | PICK |
 | `open-palm` | Open palm | Signal / stop inertia | SIGNAL |
 | `fist` | Closed fist (hold 300ms) | Fire action callback | SIGNAL |
+| `temple-tap` | Double-tap temple with index finger | Open AI voice/chat capture | SIGNAL |
 
 ### Experimental (opt-in, requires holistic mode)
 
@@ -89,11 +95,12 @@ await thor.start();
 | `head-tilt` | Head rotation | Too flakey for navigation | |
 | `lean` | Body lean via pose skeleton | Too flakey for navigation | |
 
-Register experimental gestures manually:
+Register face/head gestures manually:
 
 ```ts
-import { registerGesture, gaze, blink, headTilt, lean } from "thor.gl";
+import { registerGesture, templeTap, gaze, blink, headTilt, lean } from "thor.gl";
 
+registerGesture(templeTap, { priority: 40, group: "action" });
 registerGesture(gaze, { priority: 10, group: "gaze" });
 registerGesture(blink, { priority: 12, group: "action" });
 ```
@@ -112,7 +119,7 @@ Camera -> MediaPipe -> Thor Engine -> detect + recognize
     |                  (onGaze, onHandPoint, onGrab)                works with any pickable layer
     |
     +-- SIGNALS ------ discrete gesture events -------------------> application callbacks
-                       (fist, blink, openpalm, wave)                thor.on('fist', handler)
+                       (fist, temple-tap, openpalm, wave)           thor.on('temple-tap', handler)
 ```
 
 ## Configuration
@@ -163,7 +170,7 @@ Gestures in the **same group** compete (highest priority wins). Different groups
 ## Architecture
 
 ```
-Camera  -->  MediaPipe (Hand / Holistic)  -->  ThorFrame
+Camera  -->  MediaPipe Tasks (Hand / Face / Pose)  -->  ThorFrame
                                                   |
                        GestureHandler.detect()  <-+
                               |
@@ -179,7 +186,7 @@ Camera  -->  MediaPipe (Hand / Holistic)  -->  ThorFrame
               Controller   Layer props  thor.on()
 ```
 
-- **Detection** (`src/detection/`) — MediaPipe wrapper. Auto-promotes to holistic when face/pose gestures register.
+- **Detection** (`src/detection/`) — MediaPipe Tasks wrapper. Auto-promotes from hands-only to hand + face/pose models when face/pose gestures register.
 - **Gestures** (`src/gestures/`) — Registry of `GestureHandler` implementations with conflict resolution.
 - **Emit** (`src/emit/`) — Translation layer: navigation events, picking calls, signal dispatch.
 - **Thor** (`src/thor.ts`) — Framework-agnostic class wiring all three channels to a deck instance.

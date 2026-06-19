@@ -1,18 +1,21 @@
 /**
  * Unified MediaPipe detector for thor.gl.
  *
- * Wraps HandLandmarker and HolisticLandmarker behind a single interface.
+ * Wraps MediaPipe Tasks landmarkers behind a single interface.
  * Supports three modes:
  *   - "hands": lightweight, only hand landmarks (~8ms/frame)
  *   - "holistic": full body — hands + face + pose in one pass (~15ms/frame)
  *   - "auto": starts with hands, promotes to holistic when face/pose handlers register
  *
- * HolisticLandmarker gracefully returns empty arrays for body parts it can't see,
- * so a holistic detector works fine even if only hands are visible.
+ * The "holistic" mode runs the needed hand, face, and pose Tasks models
+ * together. MediaPipe Tasks JS does not expose a HolisticLandmarker class in
+ * every release, so this module composes the stable single-purpose models.
  */
 
 import {
+  FaceLandmarker,
   HandLandmarker,
+  PoseLandmarker,
   FilesetResolver,
   type HandLandmarkerResult,
   type NormalizedLandmark,
@@ -25,19 +28,20 @@ const WASM_PATH =
   "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.32/wasm";
 const HAND_MODEL_PATH =
   "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
+const FACE_MODEL_PATH =
+  "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/latest/face_landmarker.task";
+const POSE_MODEL_PATH =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
 
 // ── State ──
 
 let vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>> | null =
   null;
 let handLandmarker: HandLandmarker | null = null;
+let faceLandmarker: FaceLandmarker | null = null;
+let poseLandmarker: PoseLandmarker | null = null;
 let activeMode: "hands" | "holistic" | null = null;
 let initPromise: Promise<void> | null = null;
-
-// ── Holistic support ──
-// HolisticLandmarker requires a separate import path. We'll dynamic-import
-// it only when needed so the hands-only path stays lightweight.
-let holisticLandmarker: any = null;
 
 async function ensureVision(): Promise<typeof vision> {
   if (vision) return vision;
@@ -78,7 +82,7 @@ export async function initDetector(config: DetectorConfig): Promise<void> {
   const targetMode = resolveMode(config.mode, config.requiredParts);
 
   // Already initialized in the right mode
-  if (activeMode === targetMode && (handLandmarker || holisticLandmarker)) {
+  if (activeMode === targetMode && (handLandmarker || faceLandmarker || poseLandmarker)) {
     return;
   }
 
@@ -109,62 +113,50 @@ export async function initDetector(config: DetectorConfig): Promise<void> {
         });
         console.log("[thor.gl] HandLandmarker ready");
       } else {
-        // Holistic — dynamic import to keep hands-only path light
-        console.log("[thor.gl] Creating HolisticLandmarker...");
-        try {
-          const mod = await import("@mediapipe/tasks-vision");
-          const HolisticLandmarker = (mod as any).HolisticLandmarker;
-          if (!HolisticLandmarker) {
-            // HolisticLandmarker may not be available in all versions.
-            // Fall back to HandLandmarker + log warning.
-            console.warn(
-              "[thor.gl] HolisticLandmarker not available in this @mediapipe/tasks-vision version. Falling back to HandLandmarker."
-            );
-            handLandmarker = await HandLandmarker.createFromOptions(v!, {
-              baseOptions: {
-                modelAssetPath: HAND_MODEL_PATH,
-                delegate: "GPU",
-              },
-              runningMode: "VIDEO",
-              numHands: config.numHands ?? 2,
-              minHandDetectionConfidence: config.minDetectionConfidence ?? 0.5,
-              minHandPresenceConfidence: config.minDetectionConfidence ?? 0.5,
-              minTrackingConfidence: config.minTrackingConfidence ?? 0.5,
-            });
-            activeMode = "hands";
-            initPromise = null;
-            return;
-          }
+        console.log("[thor.gl] Creating multi-task landmarkers...");
+        handLandmarker = await HandLandmarker.createFromOptions(v!, {
+          baseOptions: {
+            modelAssetPath: HAND_MODEL_PATH,
+            delegate: "GPU",
+          },
+          runningMode: "VIDEO",
+          numHands: config.numHands ?? 2,
+          minHandDetectionConfidence: config.minDetectionConfidence ?? 0.5,
+          minHandPresenceConfidence: config.minDetectionConfidence ?? 0.5,
+          minTrackingConfidence: config.minTrackingConfidence ?? 0.5,
+        });
 
-          holisticLandmarker = await HolisticLandmarker.createFromOptions(v!, {
+        if (config.requiredParts.has("face") || config.mode === "holistic") {
+          faceLandmarker = await FaceLandmarker.createFromOptions(v!, {
             baseOptions: {
-              modelAssetPath:
-                "https://storage.googleapis.com/mediapipe-models/holistic_landmarker/holistic_landmarker/float16/latest/holistic_landmarker.task",
+              modelAssetPath: FACE_MODEL_PATH,
               delegate: "GPU",
             },
             runningMode: "VIDEO",
-          });
-          console.log("[thor.gl] HolisticLandmarker ready");
-        } catch (err) {
-          console.warn(
-            "[thor.gl] HolisticLandmarker failed, falling back to HandLandmarker:",
-            err
-          );
-          handLandmarker = await HandLandmarker.createFromOptions(v!, {
-            baseOptions: {
-              modelAssetPath: HAND_MODEL_PATH,
-              delegate: "GPU",
-            },
-            runningMode: "VIDEO",
-            numHands: config.numHands ?? 2,
-            minHandDetectionConfidence: config.minDetectionConfidence ?? 0.5,
-            minHandPresenceConfidence: config.minDetectionConfidence ?? 0.5,
+            numFaces: 1,
+            outputFaceBlendshapes: true,
+            outputFacialTransformationMatrixes: false,
+            minFaceDetectionConfidence: config.minDetectionConfidence ?? 0.5,
+            minFacePresenceConfidence: config.minDetectionConfidence ?? 0.5,
             minTrackingConfidence: config.minTrackingConfidence ?? 0.5,
           });
-          activeMode = "hands";
-          initPromise = null;
-          return;
         }
+
+        if (config.requiredParts.has("pose") || config.mode === "holistic") {
+          poseLandmarker = await PoseLandmarker.createFromOptions(v!, {
+            baseOptions: {
+              modelAssetPath: POSE_MODEL_PATH,
+              delegate: "GPU",
+            },
+            runningMode: "VIDEO",
+            numPoses: 1,
+            minPoseDetectionConfidence: config.minDetectionConfidence ?? 0.5,
+            minPosePresenceConfidence: config.minDetectionConfidence ?? 0.5,
+            minTrackingConfidence: config.minTrackingConfidence ?? 0.5,
+          });
+        }
+
+        console.log("[thor.gl] Multi-task landmarkers ready");
       }
 
       activeMode = targetMode;
@@ -189,8 +181,8 @@ export function detect(
   if (video.readyState < 2) return null;
 
   try {
-    if (holisticLandmarker && activeMode === "holistic") {
-      return detectHolistic(video, timestamp);
+    if (activeMode === "holistic") {
+      return detectMultiTask(video, timestamp);
     }
     if (handLandmarker) {
       return detectHands(video, timestamp);
@@ -229,45 +221,41 @@ function detectHands(
   };
 }
 
-function detectHolistic(
+function detectMultiTask(
   video: HTMLVideoElement,
   timestamp: number
 ): ThorFrame {
-  const result = holisticLandmarker.detectForVideo(video, timestamp);
-
-  // HolisticLandmarker wraps all results in outer arrays (one per person).
-  // We unwrap [0] to get the actual landmark arrays.
   const hands: NormalizedLandmark[][] = [];
   const handedness: ("Left" | "Right")[] = [];
   const handConfidences: number[] = [];
 
-  // Left hand — result.leftHandLandmarks is NormalizedLandmark[][] (wrapped)
-  const leftHand = result.leftHandLandmarks?.[0];
-  if (leftHand?.length) {
-    hands.push(leftHand);
-    handedness.push("Left");
-    handConfidences.push(0.9); // holistic doesn't give per-hand confidence; estimate high
+  if (handLandmarker) {
+    const handResult: HandLandmarkerResult = handLandmarker.detectForVideo(
+      video,
+      timestamp
+    );
+    hands.push(...(handResult.landmarks || []));
+    const rawHandedness = handResult.handedness || [];
+    handedness.push(
+      ...rawHandedness.map(
+        (h) => (h[0]?.categoryName as "Left" | "Right") || "Right"
+      )
+    );
+    handConfidences.push(...rawHandedness.map((h) => h[0]?.score ?? 0));
   }
-  // Right hand
-  const rightHand = result.rightHandLandmarks?.[0];
-  if (rightHand?.length) {
-    hands.push(rightHand);
-    handedness.push("Right");
-    handConfidences.push(0.9);
-  }
 
-  // Face — result.faceLandmarks is NormalizedLandmark[][] (wrapped)
-  const faceRaw = result.faceLandmarks?.[0];
-  const face = faceRaw?.length > 0 ? faceRaw : null;
+  const faceResult = faceLandmarker?.detectForVideo(video, timestamp);
+  const faceRaw = faceResult?.faceLandmarks?.[0];
+  const face = faceRaw && faceRaw.length > 0 ? faceRaw : null;
 
-  // Pose — result.poseLandmarks is NormalizedLandmark[][] (wrapped)
-  const poseRaw = result.poseLandmarks?.[0];
-  const pose = poseRaw?.length > 0 ? poseRaw : null;
+  const poseResult = poseLandmarker?.detectForVideo(video, timestamp);
+  const poseRaw = poseResult?.landmarks?.[0];
+  const pose = poseRaw && poseRaw.length > 0 ? poseRaw : null;
 
-  // Blendshapes
   let blendshapes: import("./types").Blendshapes | null = null;
-  if (result.faceBlendshapes?.length > 0) {
-    blendshapes = { categories: result.faceBlendshapes[0].categories || [] };
+  const faceBlendshapes = faceResult?.faceBlendshapes;
+  if (faceBlendshapes && faceBlendshapes.length > 0) {
+    blendshapes = { categories: faceBlendshapes[0].categories || [] };
   }
 
   return {
@@ -283,7 +271,7 @@ function detectHolistic(
 
 /** Check if the detector is initialized and ready. */
 export function isReady(): boolean {
-  return handLandmarker !== null || holisticLandmarker !== null;
+  return handLandmarker !== null || faceLandmarker !== null || poseLandmarker !== null;
 }
 
 /** Get the current active detector mode. */
@@ -297,9 +285,13 @@ export function destroyDetector(): void {
     handLandmarker.close();
     handLandmarker = null;
   }
-  if (holisticLandmarker) {
-    holisticLandmarker.close();
-    holisticLandmarker = null;
+  if (faceLandmarker) {
+    faceLandmarker.close();
+    faceLandmarker = null;
+  }
+  if (poseLandmarker) {
+    poseLandmarker.close();
+    poseLandmarker = null;
   }
   activeMode = null;
   initPromise = null;

@@ -72,9 +72,9 @@ export function createNavigationEmitter(eventManager: EventManagerLike): Navigat
       return eventManager.emit.bind(eventManager);
     }
     // Fallback for mjolnir.js versions without public emit()
-    const em = eventManager as Record<string, unknown>;
+    const em = eventManager as unknown as Record<string, unknown>;
     if (typeof em._onOtherEvent === "function") {
-      return (em._onOtherEvent as (event: Record<string, unknown>) => void).bind(em);
+      return (em._onOtherEvent as (event: { type: string; [key: string]: unknown }) => void).bind(em);
     }
     return null;
   }
@@ -108,7 +108,7 @@ export function createNavigationEmitter(eventManager: EventManagerLike): Navigat
     const centerX = (data.centerX as number) ?? 0;
     const centerY = (data.centerY as number) ?? 0;
 
-    const event: Record<string, unknown> = {
+    const event: { type: string; [key: string]: unknown } = {
       type: eventType,
       center: { x: centerX, y: centerY },
       srcEvent: syntheticPointerEvent(eventType, centerX, centerY),

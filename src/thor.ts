@@ -33,6 +33,7 @@ import {
   type DeckLike as PickingDeckLike,
 } from "./emit/picking";
 import { SignalEmitter, type ThorSignalEvent } from "./emit/signals";
+import { getIndexFingerPointer } from "./util/hand-pointer";
 
 // ── Types ──
 
@@ -102,6 +103,7 @@ export class Thor {
   private latestFrame: ThorFrame = EMPTY_FRAME;
   private latestViewState: ViewState | null = null;
   private activeGesturesPrev = new Set<string>();
+  private wasPointerSelecting = false;
 
   constructor(deck: DeckInstance, options?: ThorOptions) {
     this.deck = deck;
@@ -171,6 +173,7 @@ export class Thor {
     this.latestFrame = EMPTY_FRAME;
     this.latestViewState = null;
     this.activeGesturesPrev.clear();
+    this.wasPointerSelecting = false;
   }
 
   /** Whether Thor is currently running */
@@ -345,19 +348,25 @@ export class Thor {
         }
       }
 
-      // Hand-point picking (index fingertip = landmark 8)
-      if (frame.hands.length > 0) {
-        const indexTip = frame.hands[0]?.[8];
-        if (indexTip) {
-          const canvas = this.deck.canvas;
-          if (canvas) {
-            const rect = canvas.getBoundingClientRect();
-            this.picking.emitPicking("handpoint", {
-              x: indexTip.x * rect.width,
-              y: indexTip.y * rect.height,
-            }, { hand: 0 });
+      const canvas = this.deck.canvas;
+      if (canvas) {
+        const rect = canvas.getBoundingClientRect();
+        const pointer = getIndexFingerPointer(frame, {
+          width: rect.width,
+          height: rect.height,
+        });
+
+        if (pointer) {
+          const screenPos = { x: pointer.x, y: pointer.y };
+          this.picking.emitPicking("handpoint", screenPos, { pointer });
+
+          if (pointer.selecting && !this.wasPointerSelecting) {
+            this.picking.emitPicking("handselect", screenPos, { pointer });
+            this.signals.emit("pointerselect", { pointer });
           }
         }
+
+        this.wasPointerSelecting = pointer?.selecting ?? false;
       }
     }
 
