@@ -18,7 +18,7 @@ The bundled Natural Earth atlas is designed for world and regional exploration (
 
 The default UI is a compact control dock. Camera permission, model loading, errors, and retries have visible states. Camera frames stay on the device; the camera and tracking model are shared by the background and controls.
 
-See [DEMO.md](DEMO.md) for the rehearsal guide and the current validation boundaries.
+See [DEMO.md](DEMO.md) for the rehearsal guide and the current validation boundaries, [CHANGELOG.md](CHANGELOG.md) for release notes, and [atlas attribution](demo/public/data/README.md) for the bundled data source.
 
 ```bash
 cd demo
@@ -56,6 +56,8 @@ function MyMap() {
   );
 }
 ```
+
+`status` is `idle`, `camera`, `model`, `running`, or `error`; `error` holds a startup or tracking failure, and `retry()` restarts the session. `video` exposes the shared camera element for a background. Set `cameraOverlay: true` to align landmarks with a background using `object-fit: cover`, or `showOverlay: false` to hide landmarks. Changing `config`, `gestures`, or `paused` keeps the current camera session; setting `enabled: false` stops it.
 
 ### Thor class (framework-agnostic)
 
@@ -196,8 +198,8 @@ Camera  -->  MediaPipe (Hand / Holistic)  -->  ThorFrame
 
 ## Peer dependencies
 
-- `@deck.gl/core` >= 9.4
-- `@mediapipe/tasks-vision` >= 1.0.1
+- `@deck.gl/core` ^9.4.0
+- `@mediapipe/tasks-vision` ^1.0.1
 - `react` >= 18
 
 ## License

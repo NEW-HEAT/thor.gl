@@ -8,4 +8,7 @@
 - Bound release glide, cancel it on tracking loss, and let mouse/touch navigation take control cleanly.
 - Simplify the website to an immersive globe and compact controls, with camera background toggle, zoom buttons, mobile fitting, and optional advanced gestures.
 - Upgrade to deck.gl/luma.gl 9.4.0 and MediaPipe Tasks Vision 1.0.1. Improve camera startup, retry, timeout, GPU fallback, and cleanup.
-- Remove unused raster-layer dependencies. Add regression coverage for navigation, gesture momentum, atlas geometry, and camera lifecycle.
+
+### For contributors
+
+- Keep demo installation smaller by removing unused raster-layer dependencies. Add regression coverage for navigation, gesture momentum, atlas geometry, and camera lifecycle.
