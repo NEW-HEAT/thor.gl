@@ -22,6 +22,7 @@ import { gestureConfig as cfg } from "./gestures/config";
 export type EngineStatus = "idle" | "camera" | "model" | "running" | "error";
 
 export interface EngineConfig {
+  panViewState?: GestureConfig["panViewState"];
   detector: DetectorMode;
   gestures?: string[];
   onViewStateChange: (updater: (vs: ViewState) => ViewState) => void;
@@ -62,9 +63,11 @@ export function createEngine(config: EngineConfig): EngineHandle {
   const wasActive = new Set<string>();
 
   const gcfg: GestureConfig = {
+    get panViewState() { return config.panViewState; },
     get panSensitivity() { return cfg.panSensitivity; },
     get zoomSensitivity() { return cfg.zoomSensitivity; },
     get zoomDeadzone() { return cfg.zoomDeadzone; },
+    get minZoom() { return cfg.minZoom; },
   };
 
   function applyChanges(changes: { detection: import("./gestures").GestureDetection;

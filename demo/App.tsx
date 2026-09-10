@@ -1,19 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DeckGL from "@deck.gl/react";
 import { _GlobeView as GlobeView, MapView } from "@deck.gl/core";
-import { TileLayer } from "@deck.gl/geo-layers";
-import { BitmapLayer, ScatterplotLayer, TextLayer, SolidPolygonLayer } from "@deck.gl/layers";
+import { ScatterplotLayer, TextLayer } from "@deck.gl/layers";
 import { useThor, setFistAction, type ViewState } from "thor.gl";
 import { CITIES, type City } from "./cities";
 import { MotionController } from "./MotionController";
+import { atlasLayers, type Atlas } from "./atlas";
+import { panAtlas, zoomOffset } from "./navigation";
 import "./styles.css";
 
-const INITIAL_VIEW: ViewState = { longitude: 8.5, latitude: 25, zoom: 1.2, pitch: 0, bearing: 0 };
-const TILE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
-// Satellite tiles end at Web Mercator's latitude limit; close the polar holes.
-const POLAR_CAPS = [-90, 85.051129].flatMap(south => [-180, -90, 0, 90].map(west =>
-  [[west, south], [west + 90, south], [west + 90, south < 0 ? -85.051129 : 90], [west, south < 0 ? -85.051129 : 90]]
-));
+const INITIAL_VIEW: ViewState = { longitude: 8.5, latitude: 25, zoom: 1.5, pitch: 0, bearing: 0 };
+const openingView = () => ({ ...INITIAL_VIEW, zoom: Math.min(1.5, 1.5 + Math.log2(window.innerWidth / 500)) });
 const GESTURES = [
   { id: "pinch-pan", label: "Move", hint: "Pinch one hand and drag" },
   { id: "pinch-zoom", label: "Zoom", hint: "Pinch both hands, move apart or together" },
@@ -32,6 +29,8 @@ function Icon({ name }: { name: string }) {
     fullscreen: <path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/>,
     pause: <><path d="M8 5v14M16 5v14"/></>,
     close: <path d="m6 6 12 12M6 18 18 6"/>,
+    plus: <path d="M12 5v14M5 12h14"/>,
+    minus: <path d="M5 12h14"/>,
     globe: <><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></>,
   };
   return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
@@ -57,7 +56,7 @@ function cameraMessage(error: Error) {
 }
 
 export function App() {
-  const [viewState, setViewState] = useState<ViewState>(INITIAL_VIEW);
+  const [viewState, setViewState] = useState<ViewState>(openingView);
   const [sessionOn, setSessionOn] = useState(false);
   const [paused, setPaused] = useState(false);
   const [pointerActive, setPointerActive] = useState(false);
@@ -68,12 +67,17 @@ export function App() {
   const [projection, setProjection] = useState<"globe" | "map">("globe");
   const [sensitivity, setSensitivity] = useState(1);
   const [inertia, setInertia] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 280);
-  const [enabledGestures, setEnabledGestures] = useState(GESTURES.map(g => g.id));
+  const [enabledGestures, setEnabledGestures] = useState(["pinch-pan", "pinch-zoom", "open-palm"]);
   const [selected, setSelected] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [tracking, setTracking] = useState({ hands: 0, active: [] as string[] });
   const [notice, setNotice] = useState("");
-  const [tileError, setTileError] = useState(false);
+  const [atlas, setAtlas] = useState<Atlas | null>(null);
+  const [atlasError, setAtlasError] = useState(false);
+  const [atlasAttempt, setAtlasAttempt] = useState(0);
+  const [country, setCountry] = useState<string | null>(null);
+  const [viewportSize, setViewportSize] = useState({ width: window.innerWidth, height: window.innerHeight });
+  const cameraAspect = useRef(16 / 9);
   const controlsButton = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const pointerRelease = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -85,29 +89,54 @@ export function App() {
   const updateView = useCallback((updater: (previous: ViewState) => ViewState) => setViewState(previous => {
     const next = updater(previous);
     if (next === previous) return previous;
+    const offset = zoomOffset(next.latitude, projection);
     return { ...next, longitude: ((next.longitude + 180) % 360 + 360) % 360 - 180,
-      latitude: Math.max(-85, Math.min(85, next.latitude)), zoom: Math.max(0, Math.min(18, next.zoom)),
+      latitude: Math.max(-85, Math.min(85, next.latitude)), zoom: Math.max(offset, Math.min(6 + offset, next.zoom)),
       pitch: Math.max(0, Math.min(60, next.pitch ?? 0)) };
-  }), []);
+  }), [projection]);
+  const panViewState = useCallback((view: ViewState, delta: { dx: number; dy: number }, gain: number) =>
+    panAtlas(view, delta, { ...viewportSize, projection, cameraAspect: cameraAspect.current, sensitivity: gain }), [viewportSize, projection]);
   const { widgets, status, error, video, retry, getEngine, onViewStateChange } = useThor({
     setViewState: updateView, enabled: sessionOn, detector: "hands", paused: paused || pointerActive,
+    panViewState,
     gestures: enabledGestures, cameraOverlay: cameraVisible, showOverlay: overlay,
-    config: { inertiaDuration: inertia, panSensitivity: 1.6 * sensitivity, zoomSensitivity: sensitivity,
+    config: { inertiaDuration: inertia, grabDelay: 35, minZoom: -6, panSensitivity: 2.4 * sensitivity, zoomSensitivity: sensitivity,
       rotateSensitivity: 57.3 * sensitivity, pitchSensitivity: 70 * sensitivity,
-      panMoveDeadzone: 0.002, zoomDeadzone: 0.008, rotateDeadzone: 0.025, pitchDeadzone: 0.008 },
+      panMoveDeadzone: 0.0008, zoomDeadzone: 0.008, rotateDeadzone: 0.025, pitchDeadzone: 0.008 },
   });
+  if (video?.videoWidth && video.videoHeight) cameraAspect.current = video.videoWidth / video.videoHeight;
+  const displayZoom = viewState.zoom - zoomOffset(viewState.latitude, projection);
+  const changeProjection = useCallback((next: "globe" | "map") => {
+    getEngine()?.reset();
+    setViewState(v => ({ ...v, zoom: v.zoom - zoomOffset(v.latitude, projection) + zoomOffset(v.latitude, next), transitionDuration: 0 }));
+    setProjection(next);
+  }, [getEngine, projection]);
   const reset = useCallback(() => {
     getEngine()?.reset();
-    setViewState(INITIAL_VIEW);
+    setViewState(openingView());
     setProjection("globe");
     setSelected(null);
+    setCountry(null);
   }, [getEngine]);
   const closePanel = useCallback(() => { setPanel(false); controlsButton.current?.focus(); }, []);
 
   useEffect(() => {
-    setFistAction(() => setProjection(p => p === "globe" ? "map" : "globe"));
+    const abort = new AbortController();
+    let cancelled = false;
+    const deadline = setTimeout(() => abort.abort(), 15000);
+    setAtlasError(false);
+    fetch("/data/countries.geojson", { signal: abort.signal })
+      .then(response => { if (!response.ok) throw new Error("Atlas unavailable"); return response.json(); })
+      .then(data => setAtlas(data as Atlas))
+      .catch(() => { if (!cancelled) setAtlasError(true); })
+      .finally(() => clearTimeout(deadline));
+    return () => { cancelled = true; abort.abort(); clearTimeout(deadline); };
+  }, [atlasAttempt]);
+
+  useEffect(() => {
+    setFistAction(() => changeProjection(projection === "globe" ? "map" : "globe"));
     return () => setFistAction(null);
-  }, []);
+  }, [changeProjection, projection]);
   useEffect(() => {
     window.addEventListener("pointerup", releasePointer);
     window.addEventListener("pointercancel", releasePointer);
@@ -154,19 +183,13 @@ export function App() {
   }, [status, getEngine]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(""), 4000); return () => clearTimeout(timer); }, [notice]);
 
-  const view = useMemo(() => projection === "globe" ? new GlobeView({ id: "world" }) : new MapView({ id: "world" }), [projection]);
+  const view = useMemo(() => projection === "globe" ? new GlobeView({ id: "world", resolution: 2 }) : new MapView({ id: "world" }), [projection]);
   const layers = useMemo(() => [
-    new SolidPolygonLayer({ id: "polar-caps", data: POLAR_CAPS, visible: projection === "globe",
-      getPolygon: d => d, getFillColor: [184, 202, 205, 255], parameters: { cullMode: "none" } }),
-    new TileLayer({ id: "satellite", data: TILE_URL, minZoom: 0, maxZoom: 18, tileSize: 256,
-      onTileError: () => setTileError(true),
-      renderSubLayers: (props: any) => new BitmapLayer(props, { data: undefined, image: props.data,
-        bounds: [props.tile.boundingBox[0][0], props.tile.boundingBox[0][1], props.tile.boundingBox[1][0], props.tile.boundingBox[1][1]] }),
-    }),
+    ...atlasLayers(atlas, { viewState, projection, ...viewportSize, selected: country, onSelect: setCountry }),
     new ScatterplotLayer<City>({ id: "cities", data: CITIES, pickable: true, getPosition: d => d.coordinates,
       getRadius: 3, radiusUnits: "pixels", stroked: true, lineWidthMinPixels: 1,
-      getFillColor: d => d.name === selected ? [255, 185, 133, 255] : [240, 238, 226, 200],
-      getLineColor: [255, 230, 210, 100],
+      getFillColor: d => d.name === selected ? [238, 187, 115, 255] : [33, 62, 64, 220],
+      getLineColor: [241, 245, 233, 170],
       onHover: info => setHovered(info.object?.name ?? null),
       onClick: info => setSelected(info.object?.name ?? null), updateTriggers: { getFillColor: [selected] },
     }),
@@ -174,19 +197,20 @@ export function App() {
       getPosition: d => d.coordinates, getText: d => d.name, getSize: 14, getColor: [255, 240, 225, 255],
       getPixelOffset: [0, -18], fontFamily: "sans-serif", fontSettings: { sdf: true }, outlineWidth: 3, outlineColor: [0, 0, 0, 230],
     }),
-  ], [selected, hovered, projection]);
+  ], [selected, hovered, atlas, country, viewState, projection, viewportSize]);
   const active = GESTURES.filter(g => tracking.active.includes(g.id)).map(g => g.label).join(" + ");
   const loading = status === "camera" || status === "model";
   const statusText = status === "camera" ? "Waiting for camera permission" : status === "model" ? "Loading hand tracking" :
     status === "error" ? "Camera needs attention" : status === "running" ? paused ? "Motion paused" :
-    tracking.hands ? `${tracking.hands} ${tracking.hands === 1 ? "hand" : "hands"} tracked` : "Show your hands" : "Drag to rotate · Scroll to zoom";
+    tracking.hands ? "Pinch to grab" : "Raise a hand to begin" : "Drag to explore · Scroll to zoom";
 
   return <main className="app" aria-label="Thor interactive globe">
     <CameraBackground source={video} visible={cameraVisible} strength={cameraStrength} />
     <div className="vignette" aria-hidden="true" />
     <div className="globe-stage" onPointerDown={() => { clearTimeout(pointerRelease.current); getEngine()?.reset(); setPointerActive(true); }}
       onWheel={() => { getEngine()?.reset(); setPointerActive(true); releasePointer(); }}>
-      <DeckGL views={view} viewState={{ ...viewState, minZoom: 0, maxZoom: 18, maxPitch: 60 }} onViewStateChange={onViewStateChange as any}
+      <DeckGL views={view} viewState={{ ...viewState, minZoom: 0, maxZoom: 6, maxPitch: 60 }} onViewStateChange={onViewStateChange as any}
+        onResize={setViewportSize}
         layers={layers} widgets={sessionOn ? widgets : []} parameters={{ cullMode: "back" }}
         controller={{ ...(projection === "globe" ? { type: MotionController } : {}), touchRotate: true, touchZoom: true, dragPan: true,
           inertia: Math.round(inertia * 0.6), scrollZoom: { speed: 0.005, smooth: true } }}
@@ -195,6 +219,8 @@ export function App() {
 
     <header className="header">
       <div className="header-actions">
+        <button className="icon-button" disabled={displayZoom <= 0.001} aria-label="Zoom out" title="Zoom out" onClick={() => { getEngine()?.reset(); updateView(v => ({ ...v, zoom: v.zoom - 0.5, transitionDuration: 0 })); }}><Icon name="minus" /></button>
+        <button className="icon-button" disabled={displayZoom >= 5.999} aria-label="Zoom in" title="Zoom in" onClick={() => { getEngine()?.reset(); updateView(v => ({ ...v, zoom: v.zoom + 0.5, transitionDuration: 0 })); }}><Icon name="plus" /></button>
         <button className="icon-button" onClick={reset} aria-label="Reset globe" title="Reset globe (R)"><Icon name="reset" /></button>
         <button className="icon-button fullscreen" aria-label="Toggle fullscreen" title="Fullscreen" onClick={() => {
           if (document.fullscreenElement) void document.exitFullscreen();
@@ -209,7 +235,7 @@ export function App() {
 
     {panel && <aside className="controls-panel" ref={panelRef} aria-label="Motion controls" id="motion-controls">
       <div className="panel-heading"><h2>Controls</h2><button className="icon-button" onClick={closePanel} aria-label="Close controls"><Icon name="close" /></button></div>
-      <div className="segmented" aria-label="Projection"><button aria-pressed={projection === "globe"} onClick={() => setProjection("globe")}>Globe</button><button aria-pressed={projection === "map"} onClick={() => setProjection("map")}>Map</button></div>
+      <div className="segmented" aria-label="Projection"><button aria-pressed={projection === "globe"} onClick={() => changeProjection("globe")}>Globe</button><button aria-pressed={projection === "map"} onClick={() => changeProjection("map")}>Flat map</button></div>
       {sessionOn && <button className="stop-camera" onClick={() => { setSessionOn(false); setPanel(false); }}>Stop camera & tracking</button>}
       <label className="range-label" htmlFor="sensitivity"><span>Hand sensitivity</span><output>{sensitivity.toFixed(1)}×</output></label>
       <input id="sensitivity" type="range" min="0.5" max="1.5" step="0.1" value={sensitivity} onChange={e => setSensitivity(Number(e.target.value))} />
@@ -223,16 +249,19 @@ export function App() {
     </aside>}
 
     <footer className="dock-area">
-      <div className="status-line" role="status"><span hidden={!sessionOn} className={`status-dot ${status === "running" && !paused ? "live" : ""} ${loading ? "loading" : ""}`} />{notice || (active && !paused ? active : statusText)}{sessionOn && video && !cameraVisible && <span className="camera-hidden-label">Camera hidden</span>}</div>
+      <div className="status-line" role="status"><span hidden={!sessionOn} className={`status-dot ${status === "running" && !paused ? "live" : ""} ${loading ? "loading" : ""}`} />{notice || (!atlas && !atlasError ? "Loading atlas" : active && !paused ? active : statusText)}{sessionOn && video && !cameraVisible && <span className="camera-hidden-label">Camera hidden</span>}</div>
       <div className="dock">
-        {!sessionOn ? <button className="primary start-button" onClick={() => { setSessionOn(true); setPaused(false); }}><Icon name="hand" />Start camera</button> :
+        {!sessionOn ? <button className="primary start-button" onClick={() => { setSessionOn(true); setPaused(false); }}><Icon name="hand" />Use hands</button> :
           <button className={paused ? "" : "motion-button"} aria-pressed={!paused} disabled={loading || !!error} onClick={() => setPaused(value => !value)}><Icon name={paused ? "hand" : "pause"} /><span>{paused ? "Resume motion" : "Pause motion"}</span></button>}
         <span className="dock-divider" />
         <button aria-label="Camera background" aria-pressed={cameraVisible} title="Show camera behind globe (C)" onClick={() => setCameraVisible(v => !v)}><Icon name="camera" /><span>Background<span className="toggle-word"> {cameraVisible ? "on" : "off"}</span></span></button>
         <button ref={controlsButton} aria-expanded={panel} aria-controls="motion-controls" onClick={() => setPanel(v => !v)}><Icon name="sliders" /><span>Controls</span></button>
       </div>
-      {sessionOn && <p className="hint">{paused ? "Camera on · Mouse & touch ready" : "Pinch to move · Two hands to zoom, twist or tilt"}</p>}
+      {sessionOn && <p className="hint">{paused ? "Camera on · Mouse & touch ready" : "Pinch to grab · Open to release · Two hands to zoom"}</p>}
     </footer>
-    <div className="attribution">{tileError && <span className="tile-error">Some imagery could not load. </span>}Imagery © <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a> & contributors</div>
+    {country && <div className="place-caption"><span>{country}</span><button aria-label="Clear selected country" onClick={() => setCountry(null)}><Icon name="close" /></button></div>}
+    {atlasError && <div className="atlas-error" role="alert">Atlas could not load.<button onClick={() => setAtlasAttempt(n => n + 1)}>Retry</button></div>}
+    <div className="atlas-caption">Atlas <span>Countries & coastlines</span></div>
+    <div className="attribution"><a href="https://www.naturalearthdata.com/" target="_blank" rel="noreferrer">Natural Earth</a><span> · </span><a href="https://github.com/NEW-HEAT/thor.gl" target="_blank" rel="noreferrer">Source</a></div>
   </main>;
 }

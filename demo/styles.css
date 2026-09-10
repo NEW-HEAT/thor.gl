@@ -82,3 +82,40 @@ input[type="checkbox"]:checked:before { transform: translateX(12px); background:
   .header { top: 12px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before { transition: none !important; animation: none !important; } }
+
+/* An atlas first: quiet edges, a generous globe, and one clear entry point. */
+:root { background: #101a21; --accent: #e7ecdf; --muted: #aebbbd; --line: #e1efee1c; }
+.app { background: radial-gradient(ellipse at 50% 40%, #243d46 0%, #14252e 42%, #0c151c 85%); }
+.vignette { background: linear-gradient(180deg, #09151b20, transparent 35%, transparent 60%, #0711168c); }
+.header { inset: 22px 26px auto; }
+.header-actions { padding: 3px; border: 1px solid #d7e8e81a; border-radius: 12px; background: #0c1b2266; backdrop-filter: blur(12px); }
+.header-actions .icon-button { color: #e0e7e3; }
+.dock { border-radius: 16px; padding: 6px; background: #12232beb; box-shadow: 0 12px 50px #0003, inset 0 1px #ffffff08; }
+.dock button { min-height: 46px; font-size: 13px; padding: 0 18px; border-radius: 10px; }
+.dock .start-button { padding: 0 23px; }
+.status-line { font-size: 13px; color: #d9e5e0; }
+.status-dot.live { box-shadow: none; background: #bedac0; }
+.hint { color: #c0cdcc; font-size: 12px; }
+.controls-panel { background: #13232bef; border-radius: 16px; }
+.segmented { background: #0b181f; }
+.segmented button[aria-pressed="true"] { background: #344b51; }
+.range-label, .gesture-row strong, .compact { font-size: 13px; }
+.gesture-row small, .panel-note { font-size: 11px; }
+.atlas-caption { position: absolute; z-index: 4; bottom: 23px; left: 28px; font-size: 12px; color: #d1dfdb; }
+.atlas-caption span { display: block; color: #8ea7ae; font-size: 10px; margin-top: 4px; }
+.attribution { right: 28px; bottom: 23px; color: #9cb2b7; font-size: 10px; }
+.place-caption { position: absolute; z-index: 4; left: 50%; top: 35px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; border-radius: 30px; padding: 8px 10px 8px 18px; background: #11252bea; border: 1px solid var(--line); font-size: 14px; }
+.place-caption button { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; }
+.atlas-error { position: absolute; z-index: 6; top: 100px; left: 50%; transform: translateX(-50%); background: #142831; padding: 14px 18px; border: 1px solid var(--line); border-radius: 10px; font-size: 13px; }
+.atlas-error button { text-decoration: underline; margin-left: 14px; }
+@media (max-width: 600px) {
+  .header { inset: 16px 16px auto; }
+  .dock button { padding: 0 10px; font-size: 12px; }
+  .dock .start-button { padding: 0 15px; }
+  .hint { font-size: 10px; }
+  .atlas-caption { left: 18px; bottom: 17px; font-size: 11px; }
+  .atlas-caption span { display: none; }
+  .attribution { right: 18px; bottom: 17px; font-size: 9px; }
+  .place-caption { top: 80px; font-size: 13px; }
+}
+@media (max-height: 560px) { .atlas-caption { bottom: 14px; } .attribution { bottom: 14px; } }

@@ -110,7 +110,7 @@ export const pinchZoom: GestureHandler = {
     const zoomDelta = (detection.data.zoomDelta as number) * config.zoomSensitivity;
     return {
       ...viewState,
-      zoom: Math.max(0, Math.min(22, viewState.zoom + zoomDelta)),
+      zoom: Math.max(config.minZoom ?? 0, Math.min(22, viewState.zoom + zoomDelta)),
     };
   },
 

@@ -17,6 +17,7 @@ let wasPanning = false;
 let previousTime: number | null = null;
 let coastStart: number | null = null;
 let coastElapsed = 0;
+let pending: { side: string; center: { x: number; y: number }; time: number } | null = null;
 
 function clearMotion() {
   anchor = null;
@@ -27,6 +28,7 @@ function clearMotion() {
   wasPanning = false;
   coastStart = null;
   coastElapsed = 0;
+  pending = null;
 }
 
 function confirmPinch(index: number, hand: HandLandmarks | undefined, confidence: number, now: number) {
@@ -83,7 +85,16 @@ export const pinchPan: GestureHandler = {
     const index = first.confirmed ? 0 : second.confirmed ? 1 : -1;
     if (index < 0) {
       // Catch the globe as soon as a new pinch starts, before dwell confirmation.
-      if (first.dwelling || second.dwelling) { clearMotion(); return null; }
+      if (first.dwelling || second.dwelling) {
+        const waiting = first.dwelling ? 0 : 1;
+        const center = pinchCenter(frame.hands[waiting]);
+        const side = frame.handedness[waiting];
+        const start = pending?.side === side ? pending : null;
+        clearMotion();
+        if (center) pending = start ?? { side, center, time: now };
+        return null;
+      }
+      pending = null;
       // Occlusion and low-confidence tracking are not intentional releases.
       if (!frame.hands.length || (panningSide !== null && !frame.handedness.some((side, i) =>
         side === panningSide && frame.handConfidences[i] >= cfg.minConfidence))) {
@@ -96,13 +107,14 @@ export const pinchPan: GestureHandler = {
     if (!center) { clearMotion(); return null; }
     const side = frame.handedness[index];
     if (panningSide !== side || !sample || !anchor || !filtered) {
+      const start = pending?.side === side && now - pending.time <= 150 ? pending : null;
       clearMotion();
       panningSide = side;
-      anchor = center;
-      sample = { ...center, time: now };
-      filtered = { ...center };
+      anchor = start?.center ?? center;
+      sample = { ...(start?.center ?? center), time: start?.time ?? now };
+      filtered = { ...(start?.center ?? center) };
       wasPanning = true;
-      return null;
+      if (!start) return null;
     }
     coastStart = null;
     wasPanning = true;
@@ -120,7 +132,7 @@ export const pinchPan: GestureHandler = {
     velocity.y += (speedY - velocity.y) * smoothing;
     sample = { ...center, time: now };
     // A short positional filter removes landmark tremor without a long trailing hand.
-    const alpha = 1 - Math.exp(-sampleMs / 25);
+    const alpha = 1 - Math.exp(-sampleMs / 12);
     filtered.x += (center.x - filtered.x) * alpha;
     filtered.y += (center.y - filtered.y) * alpha;
     const rawX = filtered.x - anchor.x;
@@ -143,6 +155,7 @@ export const pinchPan: GestureHandler = {
 
   apply(detection, viewState, config): ViewState {
     const { dx, dy } = detection.data as { dx: number; dy: number };
+    if (config.panViewState) return config.panViewState(viewState, { dx, dy }, config.panSensitivity);
     const scale = config.panSensitivity / Math.pow(2, viewState.zoom);
     return {
       ...viewState,

@@ -28,9 +28,11 @@ export interface GestureDetection {
 
 /** Configuration passed to apply() */
 export interface GestureConfig {
+  panViewState?: (viewState: ViewState, delta: { dx: number; dy: number }, sensitivity: number) => ViewState;
   panSensitivity: number;
   zoomSensitivity: number;
   zoomDeadzone: number;
+  minZoom?: number;
 }
 
 /** Registration options */

@@ -6,13 +6,15 @@
 
 ## Demo
 
-The demo uses **deck.gl 9.4** and **MediaPipe Tasks Vision 1.0.1**. Start the camera to explore a satellite globe with your hands, with a mirrored live camera background and aligned hand landmarks.
+The demo uses **deck.gl 9.4** and **MediaPipe Tasks Vision 1.0.1**. Explore a vector atlas of countries and coastlines, or choose **Use hands** for a mirrored live camera background and hand navigation. Country geometry follows the globe directly, including the poles, without raster tiles.
 
-- Pinch one hand to move; pinch both to zoom, twist, or tilt.
-- Open a palm to stop movement; hold a fist to switch globe/map.
+- Pinch one hand to grab and move; pinch both to zoom. Open a palm to stop.
+- Enable optional twist, tilt, and fist-to-switch gestures in **Controls**.
 - Pause motion, show/hide the camera background, or stop the camera completely.
 - Tune sensitivity, release inertia, individual gestures, landmarks, and camera visibility in **Controls**.
-- Mouse/touch navigation and city picking stay available throughout.
+- Mouse/touch navigation, zoom buttons, and country/city picking stay available throughout.
+
+The bundled Natural Earth atlas is designed for world and regional exploration (zoom 0–6), with country names appearing as you zoom in. Panning preserves the globe's apparent size at high latitudes. The opening view fits narrow screens.
 
 The default UI is a compact control dock. Camera permission, model loading, errors, and retries have visible states. Camera frames stay on the device; the camera and tracking model are shared by the background and controls.
 
@@ -131,6 +133,7 @@ const { widgets } = useThor({
     panMoveDeadzone: 0.004,
     zoomSensitivity: 1, // multiplier of log2(hand span ratio)
     zoomDeadzone: 0.008,
+    minZoom: 0,
     rotateSensitivity: 40,
     rotateDeadzone: 0.015,
     pitchSensitivity: 80,
@@ -140,6 +143,8 @@ const { widgets } = useThor({
   },
 });
 ```
+
+These are library defaults. The demo uses a 35 ms grab confirmation and a smaller pan deadzone for prompt pickup. Its optional `panViewState(viewState, {dx, dy}, sensitivity)` hook callback maps normalized camera movement through deck.gl's native controller state, accounting for the mirrored camera, viewport, bearing, pitch, and globe latitude correction. See [demo/navigation.ts](demo/navigation.ts) and its wiring in [demo/App.tsx](demo/App.tsx). The demo sets `minZoom: -6` to allow deck.gl's negative polar zoom correction while bounding the visible zoom range separately.
 
 ## Custom gestures
 

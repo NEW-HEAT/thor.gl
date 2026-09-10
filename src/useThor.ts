@@ -2,12 +2,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Widget } from "@deck.gl/core";
 import type { DetectorMode } from "./detection/types";
-import type { ViewState } from "./gestures/types";
+import type { ViewState, GestureConfig } from "./gestures/types";
 import { ThorWidget } from "./ThorWidget";
 import { createEngine, type EngineHandle, type EngineStatus } from "./engine";
 import { setGestureConfig, type ThorGestureConfig } from "./gestures/config";
 
 export interface ThorConfig {
+  /** Optional viewport-native mapping from normalized camera movement. */
+  panViewState?: GestureConfig["panViewState"];
   setViewState: (updater: (vs: ViewState) => ViewState) => void;
   onViewStateChange?: (newViewState: ViewState) => void;
   enabled?: boolean;
@@ -32,10 +34,10 @@ export interface ThorResult {
 }
 
 export function useThor({ setViewState, onViewStateChange: notify, enabled = true,
-  detector = "auto", gestures, config, paused = false, cameraOverlay = false, showOverlay = true,
+  detector = "auto", gestures, config, paused = false, cameraOverlay = false, showOverlay = true, panViewState,
 }: ThorConfig): ThorResult {
-  const callbacks = useRef({ setViewState, notify });
-  callbacks.current = { setViewState, notify };
+  const callbacks = useRef({ setViewState, notify, panViewState });
+  callbacks.current = { setViewState, notify, panViewState };
   const widget = useMemo(() => new ThorWidget({ id: "thor-gl" }), []);
   const widgets = useMemo(() => [widget] as Widget[], [widget]);
   const engineRef = useRef<EngineHandle | null>(null);
@@ -61,6 +63,7 @@ export function useThor({ setViewState, onViewStateChange: notify, enabled = tru
     setError(null);
     setVideo(null);
     const engine = createEngine({
+      get panViewState() { return callbacks.current.panViewState; },
       detector, gestures: controls.current.gestures, paused: controls.current.paused,
       onViewStateChange: updater => callbacks.current.setViewState(updater),
       onViewStateNotify: vs => callbacks.current.notify?.(vs),

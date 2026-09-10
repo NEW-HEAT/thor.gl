@@ -23,6 +23,7 @@ export interface ThorGestureConfig {
   zoomSensitivity: number;
   /** Slack in log2 scale units. */
   zoomDeadzone: number;
+  minZoom: number;
 
   // Rotate
   rotateSensitivity: number;
@@ -50,6 +51,7 @@ export const gestureConfig: ThorGestureConfig = {
   // Multiplier of log2(hand span ratio): 1 means doubling span doubles scale.
   zoomSensitivity: 1,
   zoomDeadzone: 0.008,
+  minZoom: 0,
 
   rotateSensitivity: 40,
   rotateDeadzone: 0.015,

@@ -115,3 +115,19 @@ it("keeps small stationary landmark jitter inside the pan slack region", () => {
   pinchPan.detect(pinching(0, 0.2)); pinchPan.detect(pinching(100, 0.2));
   for (let i = 1; i <= 20; i++) expect(pinchPan.detect(pinching(100 + i * 33, 0.2 + (i % 2 ? 0.001 : -0.001)))).toBeNull();
 });
+it("preserves deliberate movement made during the shorter demo grab confirmation", () => {
+  Object.assign(cfg, { grabDelay: 35, panMoveDeadzone: 0.0008, panSensitivity: 2.4 });
+  expect(pinchPan.detect(pinching(0, 0.2))).toBeNull();
+  expect(pinchPan.detect(pinching(33, 0.204))).toBeNull();
+  const first = pinchPan.detect(pinching(66, 0.208))!;
+  expect(first).not.toBeNull();
+  expect(first.data.inertia).toBe(false);
+  expect(first.data.dx as number).toBeGreaterThan(0.006);
+  expect(first.data.dx as number).toBeLessThan(0.008);
+});
+it("discarded grabs do not contribute movement to the next grab", () => {
+  Object.assign(cfg, { grabDelay: 35, panMoveDeadzone: 0.0008 });
+  pinchPan.detect(pinching(0, 0.2)); pinchPan.detect(released(33));
+  pinchPan.detect(pinching(66, 0.4));
+  expect(pinchPan.detect(pinching(110, 0.4))).toBeNull();
+});
