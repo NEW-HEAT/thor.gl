@@ -16,6 +16,25 @@ function frame(time: number, distance = 0.4, y = 0.5, angle = 0): ThorFrame {
 }
 beforeEach(() => { [pinchPan, pinchZoom, pinchRotate, pinchPitch, fist].forEach(h => h.reset?.()); });
 describe("deliberate hand motion", () => {
+  it("zooms proportionally across different starting hand spans", () => {
+    const changes = [0.2, 0.4].map(span => {
+      pinchZoom.reset?.(); pinchZoom.detect(frame(0, span)); pinchZoom.detect(frame(150, span));
+      let view = { longitude: 0, latitude: 0, zoom: 2 };
+      for (let i = 1; i <= 20; i++) {
+        const d = pinchZoom.detect(frame(150 + i * 33, span * (1 + Math.min(i, 10) * 0.025)));
+        if (d) view = pinchZoom.apply(d, view, cfg);
+      }
+      return view.zoom - 2;
+    });
+    expect(changes[0]).toBeCloseTo(changes[1], 5);
+    expect(changes[0]).toBeGreaterThan(0.29);
+    expect(changes[0]).toBeLessThan(0.33);
+  });
+  it("rebases zoom after a tracking spike without jumping", () => {
+    pinchZoom.detect(frame(0)); pinchZoom.detect(frame(150));
+    expect(pinchZoom.detect(frame(183, 0.8))).toBeNull();
+    expect(pinchZoom.detect(frame(216, 0.8))).toBeNull();
+  });
   it.each([
     [pinchZoom, (i: number) => frame(200 + i * 33, 0.4 + i * cfg.zoomDeadzone / 4), "zoom"],
     [pinchPitch, (i: number) => frame(200 + i * 33, 0.4, 0.5 + i * cfg.pitchDeadzone / 4), "pitch"],

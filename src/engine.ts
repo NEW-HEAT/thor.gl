@@ -67,6 +67,22 @@ export function createEngine(config: EngineConfig): EngineHandle {
     get zoomDeadzone() { return cfg.zoomDeadzone; },
   };
 
+  function applyChanges(changes: { detection: import("./gestures").GestureDetection;
+    apply: import("./gestures").GestureHandler["apply"] }[]) {
+    if (!changes.length) return;
+    const version = controlVersion;
+    config.onViewStateChange(vs => {
+      if (!mounted || paused || version !== controlVersion) return vs;
+      let next = vs;
+      for (const change of changes) next = change.apply(change.detection, next, gcfg);
+      // Hand samples and our release integration already describe the displayed pose.
+      // A leftover pointer transition would otherwise restart on every sample.
+      if (next !== vs) next = { ...next, transitionDuration: 0 };
+      if (next !== vs) config.onViewStateNotify?.(next);
+      return next;
+    });
+  }
+
   function processFrame(frame: ThorFrame) {
     latestFrame = frame;
 
@@ -95,8 +111,7 @@ export function createEngine(config: EngineConfig): EngineHandle {
         return false;
       });
 
-      // Special case: hand gesture handlers should still run when no hands
-      // are visible so they can trigger inertia
+      // Hand handlers also consume empty frames to clear tracking baselines.
       const isHandGesture = handler.requires.length === 1 && handler.requires[0] === "hands";
 
       if (!hasRequired && !isHandGesture) continue;
@@ -140,20 +155,7 @@ export function createEngine(config: EngineConfig): EngineHandle {
     for (const name of currentActive) wasActive.add(name);
 
     // Apply viewState changes
-    if (winners.length > 0) {
-      const version = controlVersion;
-      config.onViewStateChange((vs) => {
-        if (!mounted || paused || version !== controlVersion) return vs;
-        let newVs = vs;
-        for (const winner of winners) {
-          newVs = winner.apply(winner.detection, newVs, gcfg);
-        }
-        if (newVs !== vs) {
-          config.onViewStateNotify?.(newVs);
-        }
-        return newVs;
-      });
-    }
+    applyChanges(winners);
 
     // Notify after processing so widget/debug gets current active gestures
     config.onFrame?.(frame);
@@ -239,6 +241,13 @@ export function createEngine(config: EngineConfig): EngineHandle {
               lastVideoTime = video.currentTime;
               const frame = detector.detect(video, timestamp);
               processFrame(frame ?? { ...EMPTY_FRAME, timestamp });
+            } else if (!paused && !document.hidden) {
+              // Decay at display refresh rate, not the slower camera/model rate.
+              const changes = getActiveGestures(gestureNames).flatMap(({ handler }) => {
+                const detection = handler.animate?.(timestamp);
+                return detection ? [{ detection, apply: handler.apply.bind(handler) }] : [];
+              });
+              applyChanges(changes);
             }
             animationId = requestAnimationFrame(loop);
           } catch (error) {

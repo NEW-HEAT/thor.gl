@@ -24,9 +24,11 @@ On another device, use a trusted HTTPS origin. `HTTPS=1 npm run dev -- --host` e
 6. **Background** shows/hides the camera image without disabling tracking. The status says **Camera hidden** when hidden.
 7. **Controls → Stop camera & tracking** releases the camera completely.
 
-Controls includes sensitivity, inertia duration, individual gesture switches, landmark visibility, camera opacity, and globe/map selection. Tuning does not reload the detector or reacquire the camera. Reset returns to the opening globe view and clears gesture momentum.
+Controls includes hand sensitivity, glide, individual gesture switches, landmark visibility, camera opacity, and globe/map selection. Tuning does not reload the detector or reacquire the camera. Reset returns to the opening globe view and clears gesture momentum.
 
-Release a drag or hand pinch to coast. Inertia defaults to 0.9 seconds and can be adjusted from 0 to 1.6 seconds in Controls. A new pinch catches hand momentum immediately; a stationary hold before release does not fling. The default is off when the browser requests reduced motion.
+Release a drag or a visible hand pinch to coast. Hand glide defaults to 280 ms and can be adjusted from 0 to 600 ms. Pointer glide uses 60% of that duration, with globe pointer travel capped at 24 px. A new pinch catches hand momentum immediately; a stationary hold, tracking loss, or low-confidence release does not fling. Hand release runs at display refresh rate and cancels if camera samples go stale. The default is off when the browser requests reduced motion.
+
+Hand pan gain is 1.6 (previously 5), with a 25 ms positional filter and a small slack region to reject tremor. Zoom uses the ratio of hand spacing: at 1× sensitivity, 25% wider spacing produces approximately 25% more magnification, regardless of the initial span. Large single-frame tracking jumps rebase without moving the globe. Mouse dragging temporarily takes control from hand tracking; new hand updates discard old pointer transition settings.
 
 Keyboard: **Space** pauses/resumes (when focus is on the globe), **R** resets, **C** toggles the camera background, **Escape** closes controls and pauses motion. Native button/input keyboard behavior is preserved.
 
@@ -35,9 +37,9 @@ The interface keeps the globe and controls visible without a logo, headline, or 
 ## Validation on September 10
 
 - **PASS:** Fresh lockfile installation (`npm ci --ignore-scripts`) in an isolated temporary directory.
-- **PASS:** TypeScript checks across the demo and library; 26 regression tests; production build.
+- **PASS:** TypeScript checks across the demo and library; 36 regression tests; production build.
 - **PASS:** Local browser rendered the globe, a real camera behind it, aligned hand landmarks, and live hand/gesture status. Rotate, move, and open-palm states were observed. Individual gesture usability is still something to rehearse with the presenter.
-- **PASS:** Rendered mouse drag continued moving after release and settled; the Inertia slider switched to Off.
+- **PASS:** Replayed a quick 100 px mouse drag in the built browser preview before and after tuning. The previous release spun across a hemisphere; the bounded controller produced a small glide and remained settled in the next screenshot. Controller regressions separately verify the extreme-velocity cap and zero-inertia behavior.
 - **PASS:** Pause/resume UI, camera background toggle, sensitivity adjustment, per-gesture switch, globe/map buttons, and stop-camera flow. After stop, only the background video remained in the DOM with `srcObject: null`.
 - **PASS:** Desktop 1280×720 and mobile 390×844 layout checks. Mobile viewport geometry was read back after resize; this is browser viewport testing, not physical-phone proof.
 - **PASS:** Unit regressions cover slow motion below per-frame deadzones, reacquisition after hand loss, stable hand ordering, GPU-to-CPU fallback, open-palm stopping, single-fire fist actions, startup failure/timeout, late camera/model cleanup, landmark overlay reattachment after restart, and frame-rate-independent release momentum.

@@ -125,12 +125,12 @@ const { widgets } = useThor({
     minConfidence: 0.5,
     grabDelay: 100,
     pinchThreshold: 0.06,
-    panSensitivity: 5.0,
+    panSensitivity: 1.6,
     panSmoothing: 0.4,
-    inertiaDuration: 900, // milliseconds; 0 disables hand momentum
+    inertiaDuration: 280, // milliseconds, capped at 600; 0 disables hand momentum
     panMoveDeadzone: 0.004,
-    zoomSensitivity: 10,
-    zoomDeadzone: 0.015,
+    zoomSensitivity: 1, // multiplier of log2(hand span ratio)
+    zoomDeadzone: 0.008,
     rotateSensitivity: 40,
     rotateDeadzone: 0.015,
     pitchSensitivity: 80,

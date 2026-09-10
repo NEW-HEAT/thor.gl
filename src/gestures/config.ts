@@ -15,11 +15,13 @@ export interface ThorGestureConfig {
   panSensitivity: number;
   panSmoothing: number;
   panMoveDeadzone: number;
-  /** Release momentum duration in milliseconds; 0 disables inertia. */
+  /** Release momentum duration in milliseconds, capped at 600; 0 disables inertia. */
   inertiaDuration: number;
 
   // Zoom
+  /** Multiplier of log2(hand span ratio). */
   zoomSensitivity: number;
+  /** Slack in log2 scale units. */
   zoomDeadzone: number;
 
   // Rotate
@@ -40,13 +42,14 @@ export const gestureConfig: ThorGestureConfig = {
   grabDelay: 100,
   pinchThreshold: 0.06,
 
-  panSensitivity: 5.0,
+  panSensitivity: 1.6,
   panSmoothing: 0.4,
   panMoveDeadzone: 0.004,
-  inertiaDuration: 900,
+  inertiaDuration: 280,
 
-  zoomSensitivity: 10,
-  zoomDeadzone: 0.015,
+  // Multiplier of log2(hand span ratio): 1 means doubling span doubles scale.
+  zoomSensitivity: 1,
+  zoomDeadzone: 0.008,
 
   rotateSensitivity: 40,
   rotateDeadzone: 0.015,

@@ -77,3 +77,19 @@ it("an open palm stops pan movement and resets momentum", async () => {
   expect(panApply).not.toHaveBeenCalled(); expect(reset).toHaveBeenCalled();
   unregisterGesture("pinch-test"); unregisterGesture("open-palm-test");
 });
+
+it("advances release animation between detections and stops advancing while paused", async () => {
+  const animate = vi.fn(() => ({ gesture: "coast-test", data: {} }));
+  const apply = vi.fn((_: any, vs: any) => ({ ...vs, longitude: vs.longitude + 1 }));
+  registerGesture({ name: "coast-test", requires: ["hands"], detect: () => null, animate, apply });
+  let view = { longitude: 0, latitude: 0, zoom: 2, transitionDuration: 168 };
+  engine = createEngine({ detector: "hands", gestures: ["coast-test"], onViewStateChange: fn => { view = fn(view) as typeof view; } });
+  await engine.start(); source.currentTime = 1; tick(100); tick(116);
+  expect(mock.detect).toHaveBeenCalledTimes(1);
+  expect(animate).toHaveBeenCalledWith(116);
+  expect(apply).toHaveBeenCalledTimes(1);
+  expect(view.transitionDuration).toBe(0);
+  engine.setPaused(true); tick(132);
+  expect(animate).toHaveBeenCalledTimes(1);
+  unregisterGesture("coast-test");
+});

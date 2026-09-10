@@ -14,6 +14,8 @@ export interface ViewState {
   zoom: number;
   pitch?: number;
   bearing?: number;
+  /** deck.gl transition state may be present after pointer navigation. */
+  transitionDuration?: number | "auto";
 }
 
 /** What a gesture handler detects */
@@ -61,6 +63,9 @@ export interface GestureHandler {
    * Must be pure — no side effects, no state mutation outside the handler.
    */
   detect(frame: ThorFrame): GestureDetection | null;
+
+  /** Advance release momentum at display refresh rate, without rerunning detection. */
+  animate?(timestamp: number): GestureDetection | null;
 
   /**
    * Apply detected gesture to viewState. Pure function.

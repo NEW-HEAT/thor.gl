@@ -5,6 +5,7 @@ import { TileLayer } from "@deck.gl/geo-layers";
 import { BitmapLayer, ScatterplotLayer, TextLayer, SolidPolygonLayer } from "@deck.gl/layers";
 import { useThor, setFistAction, type ViewState } from "thor.gl";
 import { CITIES, type City } from "./cities";
+import { MotionController } from "./MotionController";
 import "./styles.css";
 
 const INITIAL_VIEW: ViewState = { longitude: 8.5, latitude: 25, zoom: 1.2, pitch: 0, bearing: 0 };
@@ -59,13 +60,14 @@ export function App() {
   const [viewState, setViewState] = useState<ViewState>(INITIAL_VIEW);
   const [sessionOn, setSessionOn] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [pointerActive, setPointerActive] = useState(false);
   const [cameraVisible, setCameraVisible] = useState(true);
   const [cameraStrength, setCameraStrength] = useState(0.65);
   const [overlay, setOverlay] = useState(true);
   const [panel, setPanel] = useState(false);
   const [projection, setProjection] = useState<"globe" | "map">("globe");
   const [sensitivity, setSensitivity] = useState(1);
-  const [inertia, setInertia] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 900);
+  const [inertia, setInertia] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 280);
   const [enabledGestures, setEnabledGestures] = useState(GESTURES.map(g => g.id));
   const [selected, setSelected] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -74,6 +76,11 @@ export function App() {
   const [tileError, setTileError] = useState(false);
   const controlsButton = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const pointerRelease = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const releasePointer = useCallback(() => {
+    clearTimeout(pointerRelease.current);
+    pointerRelease.current = setTimeout(() => setPointerActive(false), Math.max(200, inertia * 0.6));
+  }, [inertia]);
 
   const updateView = useCallback((updater: (previous: ViewState) => ViewState) => setViewState(previous => {
     const next = updater(previous);
@@ -83,11 +90,11 @@ export function App() {
       pitch: Math.max(0, Math.min(60, next.pitch ?? 0)) };
   }), []);
   const { widgets, status, error, video, retry, getEngine, onViewStateChange } = useThor({
-    setViewState: updateView, enabled: sessionOn, detector: "hands", paused,
+    setViewState: updateView, enabled: sessionOn, detector: "hands", paused: paused || pointerActive,
     gestures: enabledGestures, cameraOverlay: cameraVisible, showOverlay: overlay,
-    config: { inertiaDuration: inertia, panSensitivity: 5 * sensitivity, zoomSensitivity: 10 * sensitivity,
-      rotateSensitivity: 57.3 * sensitivity, pitchSensitivity: 120 * sensitivity,
-      panMoveDeadzone: 0.002, zoomDeadzone: 0.006, rotateDeadzone: 0.012, pitchDeadzone: 0.004 },
+    config: { inertiaDuration: inertia, panSensitivity: 1.6 * sensitivity, zoomSensitivity: sensitivity,
+      rotateSensitivity: 57.3 * sensitivity, pitchSensitivity: 70 * sensitivity,
+      panMoveDeadzone: 0.002, zoomDeadzone: 0.008, rotateDeadzone: 0.025, pitchDeadzone: 0.008 },
   });
   const reset = useCallback(() => {
     getEngine()?.reset();
@@ -101,6 +108,17 @@ export function App() {
     setFistAction(() => setProjection(p => p === "globe" ? "map" : "globe"));
     return () => setFistAction(null);
   }, []);
+  useEffect(() => {
+    window.addEventListener("pointerup", releasePointer);
+    window.addEventListener("pointercancel", releasePointer);
+    window.addEventListener("blur", releasePointer);
+    return () => {
+      clearTimeout(pointerRelease.current);
+      window.removeEventListener("pointerup", releasePointer);
+      window.removeEventListener("pointercancel", releasePointer);
+      window.removeEventListener("blur", releasePointer);
+    };
+  }, [releasePointer]);
   useEffect(() => {
     if (!panel) return;
     panelRef.current?.querySelector<HTMLButtonElement>("button")?.focus();
@@ -166,10 +184,12 @@ export function App() {
   return <main className="app" aria-label="Thor interactive globe">
     <CameraBackground source={video} visible={cameraVisible} strength={cameraStrength} />
     <div className="vignette" aria-hidden="true" />
-    <div className="globe-stage">
+    <div className="globe-stage" onPointerDown={() => { clearTimeout(pointerRelease.current); getEngine()?.reset(); setPointerActive(true); }}
+      onWheel={() => { getEngine()?.reset(); setPointerActive(true); releasePointer(); }}>
       <DeckGL views={view} viewState={{ ...viewState, minZoom: 0, maxZoom: 18, maxPitch: 60 }} onViewStateChange={onViewStateChange as any}
         layers={layers} widgets={sessionOn ? widgets : []} parameters={{ cullMode: "back" }}
-        controller={{ touchRotate: true, touchZoom: true, dragPan: true, inertia }}
+        controller={{ ...(projection === "globe" ? { type: MotionController } : {}), touchRotate: true, touchZoom: true, dragPan: true,
+          inertia: Math.round(inertia * 0.6), scrollZoom: { speed: 0.005, smooth: true } }}
         getCursor={({ isDragging, isHovering }) => isDragging ? "grabbing" : isHovering ? "pointer" : "grab"} />
     </div>
 
@@ -191,10 +211,10 @@ export function App() {
       <div className="panel-heading"><h2>Controls</h2><button className="icon-button" onClick={closePanel} aria-label="Close controls"><Icon name="close" /></button></div>
       <div className="segmented" aria-label="Projection"><button aria-pressed={projection === "globe"} onClick={() => setProjection("globe")}>Globe</button><button aria-pressed={projection === "map"} onClick={() => setProjection("map")}>Map</button></div>
       {sessionOn && <button className="stop-camera" onClick={() => { setSessionOn(false); setPanel(false); }}>Stop camera & tracking</button>}
-      <label className="range-label" htmlFor="sensitivity"><span>Sensitivity</span><output>{sensitivity.toFixed(1)}×</output></label>
-      <input id="sensitivity" type="range" min="0.4" max="2" step="0.1" value={sensitivity} onChange={e => setSensitivity(Number(e.target.value))} />
-      <label className="range-label" htmlFor="inertia"><span>Inertia</span><output>{inertia ? `${(inertia / 1000).toFixed(1)} s` : "Off"}</output></label>
-      <input id="inertia" type="range" min="0" max="1600" step="100" value={inertia} onChange={e => { getEngine()?.reset(); setInertia(Number(e.target.value)); }} />
+      <label className="range-label" htmlFor="sensitivity"><span>Hand sensitivity</span><output>{sensitivity.toFixed(1)}×</output></label>
+      <input id="sensitivity" type="range" min="0.5" max="1.5" step="0.1" value={sensitivity} onChange={e => setSensitivity(Number(e.target.value))} />
+      <label className="range-label" htmlFor="inertia"><span>Glide</span><output>{inertia ? `${inertia} ms` : "Off"}</output></label>
+      <input id="inertia" type="range" min="0" max="600" step="20" value={inertia} onChange={e => { getEngine()?.reset(); setInertia(Number(e.target.value)); }} />
       <div className="gesture-list">{GESTURES.map(g => <label className="gesture-row" key={g.id}><span><strong>{g.label}</strong><small>{g.hint}</small></span><input type="checkbox" checked={enabledGestures.includes(g.id)} onChange={e => setEnabledGestures(current => e.target.checked ? [...current, g.id] : current.filter(id => id !== g.id))} /></label>)}</div>
       <label className="gesture-row compact"><span>Hand landmarks</span><input type="checkbox" checked={overlay} onChange={e => setOverlay(e.target.checked)} /></label>
       <label className="range-label" htmlFor="camera-strength"><span>Camera visibility</span><output>{Math.round(cameraStrength * 100)}%</output></label>

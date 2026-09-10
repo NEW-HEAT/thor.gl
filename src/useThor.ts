@@ -49,7 +49,9 @@ export function useThor({ setViewState, onViewStateChange: notify, enabled = tru
   const configKey = JSON.stringify(config ?? {});
 
   // Live tuning does not reacquire the camera or reload the model.
-  useEffect(() => { if (config) setGestureConfig(config); }, [configKey]);
+  useEffect(() => {
+    if (config) { engineRef.current?.reset(); setGestureConfig(config); }
+  }, [configKey]);
   useEffect(() => { engineRef.current?.setGestures(gestures); }, [gestureKey]);
   useEffect(() => { engineRef.current?.setPaused(paused); }, [paused]);
 
