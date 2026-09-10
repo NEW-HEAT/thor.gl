@@ -15,6 +15,8 @@ export interface ThorGestureConfig {
   panSensitivity: number;
   panSmoothing: number;
   panMoveDeadzone: number;
+  /** Release momentum duration in milliseconds; 0 disables inertia. */
+  inertiaDuration: number;
 
   // Zoom
   zoomSensitivity: number;
@@ -41,6 +43,7 @@ export const gestureConfig: ThorGestureConfig = {
   panSensitivity: 5.0,
   panSmoothing: 0.4,
   panMoveDeadzone: 0.004,
+  inertiaDuration: 900,
 
   zoomSensitivity: 10,
   zoomDeadzone: 0.015,

@@ -24,18 +24,23 @@ On another device, use a trusted HTTPS origin. `HTTPS=1 npm run dev -- --host` e
 6. **Background** shows/hides the camera image without disabling tracking. The status says **Camera hidden** when hidden.
 7. **Controls → Stop camera & tracking** releases the camera completely.
 
-Controls includes sensitivity, individual gesture switches, landmark visibility, camera opacity, and globe/map selection. Tuning does not reload the detector or reacquire the camera. Reset returns to the opening globe view and clears gesture momentum.
+Controls includes sensitivity, inertia duration, individual gesture switches, landmark visibility, camera opacity, and globe/map selection. Tuning does not reload the detector or reacquire the camera. Reset returns to the opening globe view and clears gesture momentum.
+
+Release a drag or hand pinch to coast. Inertia defaults to 0.9 seconds and can be adjusted from 0 to 1.6 seconds in Controls. A new pinch catches hand momentum immediately; a stationary hold before release does not fling. The default is off when the browser requests reduced motion.
 
 Keyboard: **Space** pauses/resumes (when focus is on the globe), **R** resets, **C** toggles the camera background, **Escape** closes controls and pauses motion. Native button/input keyboard behavior is preserved.
+
+The interface keeps the globe and controls visible without a logo, headline, or byline.
 
 ## Validation on September 10
 
 - **PASS:** Fresh lockfile installation (`npm ci --ignore-scripts`) in an isolated temporary directory.
-- **PASS:** TypeScript checks across the demo and library; 19 regression tests; production build.
+- **PASS:** TypeScript checks across the demo and library; 26 regression tests; production build.
 - **PASS:** Local browser rendered the globe, a real camera behind it, aligned hand landmarks, and live hand/gesture status. Rotate, move, and open-palm states were observed. Individual gesture usability is still something to rehearse with the presenter.
+- **PASS:** Rendered mouse drag continued moving after release and settled; the Inertia slider switched to Off.
 - **PASS:** Pause/resume UI, camera background toggle, sensitivity adjustment, per-gesture switch, globe/map buttons, and stop-camera flow. After stop, only the background video remained in the DOM with `srcObject: null`.
 - **PASS:** Desktop 1280×720 and mobile 390×844 layout checks. Mobile viewport geometry was read back after resize; this is browser viewport testing, not physical-phone proof.
-- **PASS:** Unit regressions cover slow motion below per-frame deadzones, reacquisition after hand loss, stable hand ordering, GPU-to-CPU fallback, open-palm stopping, single-fire fist actions, startup failure/timeout, late camera/model cleanup, and landmark overlay reattachment after restart.
+- **PASS:** Unit regressions cover slow motion below per-frame deadzones, reacquisition after hand loss, stable hand ordering, GPU-to-CPU fallback, open-palm stopping, single-fire fist actions, startup failure/timeout, late camera/model cleanup, landmark overlay reattachment after restart, and frame-rate-independent release momentum.
 - **UNVERIFIED:** Venue/projector, the demo device's permission setup, and final presenter acceptance. Public thor.gl has not been deployed by this change.
 
 ## Dependencies and remaining limits

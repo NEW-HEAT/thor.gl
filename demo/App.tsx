@@ -65,6 +65,7 @@ export function App() {
   const [panel, setPanel] = useState(false);
   const [projection, setProjection] = useState<"globe" | "map">("globe");
   const [sensitivity, setSensitivity] = useState(1);
+  const [inertia, setInertia] = useState(() => window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 900);
   const [enabledGestures, setEnabledGestures] = useState(GESTURES.map(g => g.id));
   const [selected, setSelected] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
@@ -84,7 +85,7 @@ export function App() {
   const { widgets, status, error, video, retry, getEngine, onViewStateChange } = useThor({
     setViewState: updateView, enabled: sessionOn, detector: "hands", paused,
     gestures: enabledGestures, cameraOverlay: cameraVisible, showOverlay: overlay,
-    config: { panSensitivity: 5 * sensitivity, zoomSensitivity: 10 * sensitivity,
+    config: { inertiaDuration: inertia, panSensitivity: 5 * sensitivity, zoomSensitivity: 10 * sensitivity,
       rotateSensitivity: 57.3 * sensitivity, pitchSensitivity: 120 * sensitivity,
       panMoveDeadzone: 0.002, zoomDeadzone: 0.006, rotateDeadzone: 0.012, pitchDeadzone: 0.004 },
   });
@@ -160,7 +161,7 @@ export function App() {
   const loading = status === "camera" || status === "model";
   const statusText = status === "camera" ? "Waiting for camera permission" : status === "model" ? "Loading hand tracking" :
     status === "error" ? "Camera needs attention" : status === "running" ? paused ? "Motion paused" :
-    tracking.hands ? `${tracking.hands} ${tracking.hands === 1 ? "hand" : "hands"} tracked` : "Show your hands" : "Mouse & touch ready";
+    tracking.hands ? `${tracking.hands} ${tracking.hands === 1 ? "hand" : "hands"} tracked` : "Show your hands" : "Drag to rotate · Scroll to zoom";
 
   return <main className="app" aria-label="Thor interactive globe">
     <CameraBackground source={video} visible={cameraVisible} strength={cameraStrength} />
@@ -168,12 +169,11 @@ export function App() {
     <div className="globe-stage">
       <DeckGL views={view} viewState={{ ...viewState, minZoom: 0, maxZoom: 18, maxPitch: 60 }} onViewStateChange={onViewStateChange as any}
         layers={layers} widgets={sessionOn ? widgets : []} parameters={{ cullMode: "back" }}
-        controller={{ touchRotate: true, touchZoom: true, dragPan: true }}
+        controller={{ touchRotate: true, touchZoom: true, dragPan: true, inertia }}
         getCursor={({ isDragging, isHovering }) => isDragging ? "grabbing" : isHovering ? "pointer" : "grab"} />
     </div>
 
     <header className="header">
-      <a className="brand" href="https://github.com/NEW-HEAT/thor.gl" target="_blank" rel="noreferrer" aria-label="thor.gl source on GitHub"><span className="brand-symbol">ϟ</span>thor.gl<span className="brand-by">by NEWHEAT</span></a>
       <div className="header-actions">
         <button className="icon-button" onClick={reset} aria-label="Reset globe" title="Reset globe (R)"><Icon name="reset" /></button>
         <button className="icon-button fullscreen" aria-label="Toggle fullscreen" title="Fullscreen" onClick={() => {
@@ -184,26 +184,26 @@ export function App() {
       </div>
     </header>
 
-    {!sessionOn && <div className="intro"><p className="eyebrow">A more natural way to explore</p><h1>The world in your hands.</h1></div>}
 
-    {error && <section className="error-card" role="alert"><span className="eyebrow">Let’s reconnect</span><h2>Camera unavailable</h2><p>{cameraMessage(error)}</p><div className="error-actions"><button className="primary" onClick={retry}>Retry camera</button><button onClick={() => setSessionOn(false)}>Use mouse & touch</button></div></section>}
+    {error && <section className="error-card" role="alert"><h2>Camera unavailable</h2><p>{cameraMessage(error)}</p><div className="error-actions"><button className="primary" onClick={retry}>Retry camera</button><button onClick={() => setSessionOn(false)}>Use mouse & touch</button></div></section>}
 
     {panel && <aside className="controls-panel" ref={panelRef} aria-label="Motion controls" id="motion-controls">
-      <div className="panel-heading"><div><p className="eyebrow">Make it feel right</p><h2>Motion controls</h2></div><button className="icon-button" onClick={closePanel} aria-label="Close controls"><Icon name="close" /></button></div>
+      <div className="panel-heading"><h2>Controls</h2><button className="icon-button" onClick={closePanel} aria-label="Close controls"><Icon name="close" /></button></div>
       <div className="segmented" aria-label="Projection"><button aria-pressed={projection === "globe"} onClick={() => setProjection("globe")}>Globe</button><button aria-pressed={projection === "map"} onClick={() => setProjection("map")}>Map</button></div>
       {sessionOn && <button className="stop-camera" onClick={() => { setSessionOn(false); setPanel(false); }}>Stop camera & tracking</button>}
       <label className="range-label" htmlFor="sensitivity"><span>Sensitivity</span><output>{sensitivity.toFixed(1)}×</output></label>
       <input id="sensitivity" type="range" min="0.4" max="2" step="0.1" value={sensitivity} onChange={e => setSensitivity(Number(e.target.value))} />
+      <label className="range-label" htmlFor="inertia"><span>Inertia</span><output>{inertia ? `${(inertia / 1000).toFixed(1)} s` : "Off"}</output></label>
+      <input id="inertia" type="range" min="0" max="1600" step="100" value={inertia} onChange={e => { getEngine()?.reset(); setInertia(Number(e.target.value)); }} />
       <div className="gesture-list">{GESTURES.map(g => <label className="gesture-row" key={g.id}><span><strong>{g.label}</strong><small>{g.hint}</small></span><input type="checkbox" checked={enabledGestures.includes(g.id)} onChange={e => setEnabledGestures(current => e.target.checked ? [...current, g.id] : current.filter(id => id !== g.id))} /></label>)}</div>
       <label className="gesture-row compact"><span>Hand landmarks</span><input type="checkbox" checked={overlay} onChange={e => setOverlay(e.target.checked)} /></label>
       <label className="range-label" htmlFor="camera-strength"><span>Camera visibility</span><output>{Math.round(cameraStrength * 100)}%</output></label>
       <input id="camera-strength" type="range" min="0.2" max="1" step="0.05" value={cameraStrength} onChange={e => setCameraStrength(Number(e.target.value))} />
       <p className="panel-note">Your camera stays on this device. Space pauses motion; R resets the globe.</p>
-      <p className="version-note">deck.gl 9.4 · MediaPipe 1.0.1</p>
     </aside>}
 
     <footer className="dock-area">
-      <div className="status-line" role="status"><span className={`status-dot ${status === "running" && !paused ? "live" : ""} ${loading ? "loading" : ""}`} />{notice || (active && !paused ? active : statusText)}{sessionOn && video && !cameraVisible && <span className="camera-hidden-label">Camera hidden</span>}</div>
+      <div className="status-line" role="status"><span hidden={!sessionOn} className={`status-dot ${status === "running" && !paused ? "live" : ""} ${loading ? "loading" : ""}`} />{notice || (active && !paused ? active : statusText)}{sessionOn && video && !cameraVisible && <span className="camera-hidden-label">Camera hidden</span>}</div>
       <div className="dock">
         {!sessionOn ? <button className="primary start-button" onClick={() => { setSessionOn(true); setPaused(false); }}><Icon name="hand" />Start camera</button> :
           <button className={paused ? "" : "motion-button"} aria-pressed={!paused} disabled={loading || !!error} onClick={() => setPaused(value => !value)}><Icon name={paused ? "hand" : "pause"} /><span>{paused ? "Resume motion" : "Pause motion"}</span></button>}
@@ -211,9 +211,8 @@ export function App() {
         <button aria-label="Camera background" aria-pressed={cameraVisible} title="Show camera behind globe (C)" onClick={() => setCameraVisible(v => !v)}><Icon name="camera" /><span>Background<span className="toggle-word"> {cameraVisible ? "on" : "off"}</span></span></button>
         <button ref={controlsButton} aria-expanded={panel} aria-controls="motion-controls" onClick={() => setPanel(v => !v)}><Icon name="sliders" /><span>Controls</span></button>
       </div>
-      <p className="hint">{sessionOn ? paused ? "Camera stays live. Move the globe with your mouse or touch." : "One pinch to move. Two to zoom, twist or tilt." : "Pinch to move. Reach to explore. Or just drag the globe."}</p>
+      {sessionOn && <p className="hint">{paused ? "Camera on · Mouse & touch ready" : "Pinch to move · Two hands to zoom, twist or tilt"}</p>}
     </footer>
     <div className="attribution">{tileError && <span className="tile-error">Some imagery could not load. </span>}Imagery © <a href="https://www.esri.com/" target="_blank" rel="noreferrer">Esri</a> & contributors</div>
-    <div className="projection-label"><Icon name="globe" />{projection === "globe" ? "Globe" : "Map"}</div>
   </main>;
 }

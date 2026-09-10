@@ -11,7 +11,7 @@ The demo uses **deck.gl 9.4** and **MediaPipe Tasks Vision 1.0.1**. Start the ca
 - Pinch one hand to move; pinch both to zoom, twist, or tilt.
 - Open a palm to stop movement; hold a fist to switch globe/map.
 - Pause motion, show/hide the camera background, or stop the camera completely.
-- Tune sensitivity, individual gestures, landmarks, and camera visibility in **Controls**.
+- Tune sensitivity, release inertia, individual gestures, landmarks, and camera visibility in **Controls**.
 - Mouse/touch navigation and city picking stay available throughout.
 
 The default UI is a compact control dock. Camera permission, model loading, errors, and retries have visible states. Camera frames stay on the device; the camera and tracking model are shared by the background and controls.
@@ -127,6 +127,7 @@ const { widgets } = useThor({
     pinchThreshold: 0.06,
     panSensitivity: 5.0,
     panSmoothing: 0.4,
+    inertiaDuration: 900, // milliseconds; 0 disables hand momentum
     panMoveDeadzone: 0.004,
     zoomSensitivity: 10,
     zoomDeadzone: 0.015,
