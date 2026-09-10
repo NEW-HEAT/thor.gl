@@ -1,9 +1,7 @@
 /**
  * Fist gesture: closed fist → trigger an action (e.g. projection toggle).
  *
- * Flow: make fist → hold 300ms (confirms intent) → release fist → FIRES.
- * This means the action happens on RELEASE, not while holding. So you
- * can't accidentally double-fire by keeping your fist closed.
+ * Hold for the confirmation duration to fire once; release before firing again.
  */
 
 import type { GestureHandler, GestureDetection, ViewState, GestureConfig } from "../types";
@@ -13,7 +11,7 @@ import { gestureConfig as cfg } from "../config";
 
 let fistStart: number | null = null;
 let fired = false;         // already fired this hold
-let lastFireTime = 0;
+let lastFireTime = -Infinity;
 let _onAction: (() => void) | null = null;
 
 /** Check if all 4 fingertips are curled toward the palm. */
@@ -49,7 +47,7 @@ function isFist(landmarks: import("../../detection/types").HandLandmarks): boole
 }
 
 /** Set the action callback. Call before enabling the gesture. */
-export function setFistAction(action: () => void): void {
+export function setFistAction(action: (() => void) | null): void {
   _onAction = action;
 }
 
@@ -102,16 +100,15 @@ export const fist: GestureHandler = {
     return null;
   },
 
-  apply(detection, viewState, _config): ViewState {
-    if (detection.data?.fired) {
-      _onAction?.();
-    }
-    return viewState;
+  onTrigger(detection) {
+    if (detection.data?.fired) _onAction?.();
   },
+
+  apply(_detection, viewState): ViewState { return viewState; },
 
   reset() {
     fistStart = null;
     fired = false;
-    lastFireTime = 0;
+    lastFireTime = -Infinity;
   },
 };

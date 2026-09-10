@@ -16,6 +16,7 @@ let prevCenter: { x: number; y: number } | null = null;
 let velocity = { vx: 0, vy: 0 };
 let inertiaActive = false;
 let wasPanning = false;
+let panningSide: string | null = null;
 
 // Confirmation state per hand
 const pinchStartTimes: (number | null)[] = [null, null];
@@ -63,6 +64,8 @@ export const pinchPan: GestureHandler = {
   detect(frame: ThorFrame): GestureDetection | null {
     const { hands, handConfidences } = frame;
     if (hands.length === 0) {
+      pinchStartTimes.fill(null);
+      panningSide = null;
       // No hands — check if we should trigger inertia
       if (wasPanning) {
         const speed = Math.sqrt(velocity.vx * velocity.vx + velocity.vy * velocity.vy);
@@ -99,6 +102,9 @@ export const pinchPan: GestureHandler = {
     if (hand1.confirmed && hand2.confirmed) {
       prevCenter = null;
       wasPanning = false;
+      inertiaActive = false;
+      velocity = { vx: 0, vy: 0 };
+      panningSide = null;
       return null;
     }
 
@@ -133,6 +139,9 @@ export const pinchPan: GestureHandler = {
       return null;
     }
 
+    const side = frame.handedness[panningHandIndex];
+    if (panningSide !== side) { prevCenter = null; velocity = { vx: 0, vy: 0 }; }
+    panningSide = side;
     const center = pinchCenter(hands[panningHandIndex]);
     if (!center) return null;
 
@@ -146,12 +155,13 @@ export const pinchPan: GestureHandler = {
 
     const dx = (center.x - prevCenter.x);
     const dy = (center.y - prevCenter.y);
-    prevCenter = center;
 
     // Deadzone — ignore sub-pixel jitter from model noise
     if (Math.abs(dx) < cfg.panMoveDeadzone && Math.abs(dy) < cfg.panMoveDeadzone) {
       return null;
     }
+
+    prevCenter = center;
 
     // Update smoothed velocity for inertia
     velocity.vx = velocity.vx * (1 - cfg.panSmoothing) + dx * cfg.panSmoothing;
@@ -205,6 +215,7 @@ export const pinchPan: GestureHandler = {
     velocity = { vx: 0, vy: 0 };
     inertiaActive = false;
     wasPanning = false;
+    panningSide = null;
     pinchStartTimes[0] = null;
     pinchStartTimes[1] = null;
   },

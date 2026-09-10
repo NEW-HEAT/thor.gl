@@ -6,25 +6,25 @@
 
 ## Demo
 
-The live demo showcases all three output channels on a satellite globe with 20 pickable cities:
+The demo uses **deck.gl 9.4** and **MediaPipe Tasks Vision 1.0.1**. Start the camera to explore a satellite globe with your hands, with a mirrored live camera background and aligned hand landmarks.
 
-- **Navigation** — pinch-pan, pinch-zoom, pinch-rotate, pinch-pitch with hand gestures
-- **Picking** — hover and click cities to select
-- **Signals** — fist toggles globe/mercator, open-palm fires a toast notification
+- Pinch one hand to move; pinch both to zoom, twist, or tilt.
+- Open a palm to stop movement; hold a fist to switch globe/map.
+- Pause motion, show/hide the camera background, or stop the camera completely.
+- Tune sensitivity, individual gestures, landmarks, and camera visibility in **Controls**.
+- Mouse/touch navigation and city picking stay available throughout.
 
-Toggle between **Mjolnir** (mouse/touch) and **Thor** (hand tracking) modes. Gesture cards on the right show live status with channel tags — click the checkbox to enable/disable any gesture at runtime.
+The default UI is a compact control dock. Camera permission, model loading, errors, and retries have visible states. Camera frames stay on the device; the camera and tracking model are shared by the background and controls.
 
-Additional demo features: live camera feed with hand skeleton overlay (debug panel), collapsible event log, camera indicator, attention gate (experimental), and 9-point gaze calibration flow (experimental).
-
-> Requires a webcam. For LAN access from another device: `HTTPS=1 npx vite --host`
-
-To run locally:
+See [DEMO.md](DEMO.md) for the rehearsal guide and the current validation boundaries.
 
 ```bash
 cd demo
-npm install
-npx vite --host
+npm ci
+npm run dev
 ```
+
+Requires Node 22.12+ or 20.19+, and HTTPS or localhost for camera access.
 
 ## Quick start
 
@@ -38,10 +38,11 @@ function MyMap() {
 
   setFistAction(() => console.log("fist!"));
 
-  const { widgets } = useThor({
+  const { widgets, status, error, video, retry } = useThor({
     setViewState,
-    detector: "holistic",  // "hands" | "holistic" | "auto"
+    detector: "hands",  // "hands" | "holistic" | "auto"
     enabled: true,
+    paused: false, // pause navigation while keeping camera and landmarks live
   });
 
   return (
@@ -189,8 +190,8 @@ Camera  -->  MediaPipe (Hand / Holistic)  -->  ThorFrame
 
 ## Peer dependencies
 
-- `@deck.gl/core` >= 9
-- `@mediapipe/tasks-vision`
+- `@deck.gl/core` >= 9.4
+- `@mediapipe/tasks-vision` >= 1.0.1
 - `react` >= 18
 
 ## License

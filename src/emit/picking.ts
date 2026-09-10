@@ -101,7 +101,7 @@ export function createPickingEmitter(deck: DeckLike): PickingEmitter {
     }
 
     // Also check deck-level props (for global handlers)
-    const deckProps = (deck as Record<string, unknown>).props as
+    const deckProps = (deck as unknown as Record<string, unknown>).props as
       | Record<string, unknown>
       | undefined;
     if (deckProps && typeof deckProps[callbackName] === "function") {

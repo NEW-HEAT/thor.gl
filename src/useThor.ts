@@ -1,138 +1,91 @@
-/**
- * useThor — main React hook for thor.gl.
- *
- * Orchestrates: engine lifecycle, ThorWidget instance, viewState bridging.
- *
- * Usage:
- * ```tsx
- * const { widgets } = useThor({
- *   setViewState,
- *   onViewStateChange: (vs) => handleZoomSwitch(vs.zoom),
- *   gestures: ['pinch-pan', 'pinch-zoom'],  // optional filter
- * });
- *
- * <DeckGL widgets={widgets} />
- * ```
- */
-
-import { useCallback, useEffect, useMemo, useRef } from "react";
+/** React lifecycle and live controls for one Thor engine. */
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Widget } from "@deck.gl/core";
 import type { DetectorMode } from "./detection/types";
 import type { ViewState } from "./gestures/types";
 import { ThorWidget } from "./ThorWidget";
-import { createEngine, type EngineHandle } from "./engine";
+import { createEngine, type EngineHandle, type EngineStatus } from "./engine";
 import { setGestureConfig, type ThorGestureConfig } from "./gestures/config";
 
 export interface ThorConfig {
-  /** ViewState setter — typically shell.setViewState */
   setViewState: (updater: (vs: ViewState) => ViewState) => void;
-  /** Side-effect callback on viewState change (e.g. projection switching) */
   onViewStateChange?: (newViewState: ViewState) => void;
-  /** Whether the hook is active. Default true. */
   enabled?: boolean;
-  /** Detector mode. Default "auto". */
   detector?: DetectorMode;
-  /** Which gestures to enable (by name). Default: all registered. */
   gestures?: string[];
-
-  /** Gesture tuning — all fields optional, merged with defaults. */
   config?: Partial<ThorGestureConfig>;
+  /** Freeze navigation while keeping camera and landmarks live. */
+  paused?: boolean;
+  /** Match landmarks to a camera background using object-fit: cover. */
+  cameraOverlay?: boolean;
+  showOverlay?: boolean;
 }
 
 export interface ThorResult {
-  /** Stable widget array — pass to DeckGL `widgets` prop */
   widgets: Widget[];
-  /** Pass-through viewState change handler for mouse/touch input */
   onViewStateChange: (params: { viewState: Record<string, unknown> }) => void;
-  /** Get the engine handle for debug/inspection (null when disabled) */
   getEngine: () => EngineHandle | null;
+  status: EngineStatus;
+  error: Error | null;
+  video: HTMLVideoElement | null;
+  retry: () => void;
 }
 
-export function useThor({
-  setViewState,
-  onViewStateChange: onViewStateChangeCb,
-  enabled = true,
-  detector = "auto",
-  gestures,
-  config: configOverrides,
+export function useThor({ setViewState, onViewStateChange: notify, enabled = true,
+  detector = "auto", gestures, config, paused = false, cameraOverlay = false, showOverlay = true,
 }: ThorConfig): ThorResult {
-  // Stable refs
-  const onViewStateChangeRef = useRef(onViewStateChangeCb);
-  onViewStateChangeRef.current = onViewStateChangeCb;
-
-  const setViewStateRef = useRef(setViewState);
-  setViewStateRef.current = setViewState;
-
-  // Widget instance — stable, never recreated
+  const callbacks = useRef({ setViewState, notify });
+  callbacks.current = { setViewState, notify };
   const widget = useMemo(() => new ThorWidget({ id: "thor-gl" }), []);
-  const widgets = useMemo(() => [widget] as unknown as Widget[], [widget]);
-
-  // Engine ref
+  const widgets = useMemo(() => [widget] as Widget[], [widget]);
   const engineRef = useRef<EngineHandle | null>(null);
-
-  // Serialized gesture list for dep comparison
+  const [status, setStatus] = useState<EngineStatus>("idle");
+  const [error, setError] = useState<Error | null>(null);
+  const [video, setVideo] = useState<HTMLVideoElement | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const controls = useRef({ gestures, paused, cameraOverlay, showOverlay });
+  controls.current = { gestures, paused, cameraOverlay, showOverlay };
   const gestureKey = gestures?.join(",") ?? "__all__";
+  const configKey = JSON.stringify(config ?? {});
 
-  // Stable serialization for config overrides dep
-  const configKey = configOverrides ? JSON.stringify(configOverrides) : "";
+  // Live tuning does not reacquire the camera or reload the model.
+  useEffect(() => { if (config) setGestureConfig(config); }, [configKey]);
+  useEffect(() => { engineRef.current?.setGestures(gestures); }, [gestureKey]);
+  useEffect(() => { engineRef.current?.setPaused(paused); }, [paused]);
 
   useEffect(() => {
-    if (!enabled) {
-      if (engineRef.current) {
-        engineRef.current.stop();
-        engineRef.current = null;
-      }
-      widget.setData(null, []);
-      return;
-    }
-
-    // Apply config overrides to shared gesture config
-    if (configOverrides) {
-      setGestureConfig(configOverrides);
-    }
-
+    if (!enabled) { setStatus("idle"); setError(null); setVideo(null); return; }
+    let cancelled = false;
+    setError(null);
+    setVideo(null);
     const engine = createEngine({
-      detector,
-      gestures,
-      onViewStateChange: (updater) => {
-        setViewStateRef.current((vs) => {
-          const newVs = updater(vs);
-          if (newVs !== vs) {
-            onViewStateChangeRef.current?.(newVs);
-          }
-          return newVs;
-        });
-      },
-      onFrame: (frame) => {
-        widget.setData(frame, engine.getActiveGestureNames());
+      detector, gestures: controls.current.gestures, paused: controls.current.paused,
+      onViewStateChange: updater => callbacks.current.setViewState(updater),
+      onViewStateNotify: vs => callbacks.current.notify?.(vs),
+      onStatus: (next, failure) => { if (!cancelled) { setStatus(next); setError(failure ?? null); } },
+      onVideo: source => { if (!cancelled) setVideo(source); },
+      onFrame: frame => {
+        const source = engine.getVideo();
+        widget.setCameraSize(controls.current.cameraOverlay && source ? [source.videoWidth, source.videoHeight] : null);
+        widget.setData(controls.current.showOverlay ? frame : null, engine.getActiveGestureNames());
       },
     });
-
     engineRef.current = engine;
-
-    engine.start().catch((err) => {
-      console.error("[thor.gl] Engine start failed:", err);
-    });
-
+    void engine.start().catch(() => { /* surfaced through onStatus */ });
     return () => {
+      cancelled = true;
       engine.stop();
       engineRef.current = null;
       widget.setData(null, []);
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, detector, gestureKey, configKey]);
+  }, [enabled, detector, attempt, widget]);
 
-  // Pass-through for mouse/touch viewState changes
-  const onViewStateChange = useCallback(
-    (params: { viewState: Record<string, unknown> }) => {
-      const vs = params.viewState as unknown as ViewState;
-      setViewStateRef.current(() => vs);
-      onViewStateChangeRef.current?.(vs);
-    },
-    []
-  );
-
+  const onViewStateChange = useCallback(({ viewState }: { viewState: Record<string, unknown> }) => {
+    const vs = viewState as unknown as ViewState;
+    callbacks.current.setViewState(() => vs);
+    callbacks.current.notify?.(vs);
+  }, []);
   const getEngine = useCallback(() => engineRef.current, []);
-
-  return { widgets, onViewStateChange, getEngine };
+  const retry = useCallback(() => setAttempt(value => value + 1), []);
+  return { widgets, getEngine, onViewStateChange, status, error, video, retry };
 }

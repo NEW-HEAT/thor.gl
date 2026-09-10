@@ -4,15 +4,14 @@
  * Draws:
  * - Soft glowing fingertip dots (5 per hand)
  * - Pinch cursor ring at thumb-index midpoint
- * - Dwell progress arc
- * - Mode indicator pill (Pan/Zoom)
  *
  * Delegates per-handler rendering: handlers with render() get called too.
  */
 
 import { Widget, type WidgetPlacement, type WidgetProps } from "@deck.gl/core";
 import type { ThorFrame } from "./detection/types";
-import { HAND, FINGERTIPS, isPinching, distance } from "./detection/landmarks";
+import { HAND, FINGERTIPS, isPinching } from "./detection/landmarks";
+import { gestureConfig as cfg } from "./gestures/config";
 import { getActiveGestures } from "./gestures/registry";
 
 // ── Color palette ──
@@ -52,6 +51,10 @@ export class ThorWidget extends Widget {
   placement: WidgetPlacement = "fill";
   className = "thor-gl";
 
+  private _cameraSize: [number, number] | null = null;
+
+  setCameraSize(size: [number, number] | null) { this._cameraSize = size; }
+
   private _canvas: HTMLCanvasElement | null = null;
   private _frame: ThorFrame | null = null;
   private _activeGestures: string[] = [];
@@ -90,8 +93,9 @@ export class ThorWidget extends Widget {
         pointerEvents: "none",
         transform: "scaleX(-1)",
       });
-      rootElement.appendChild(this._canvas);
     }
+    // deck.gl recreates the widget root when tracking is stopped and restarted.
+    if (this._canvas.parentElement !== rootElement) rootElement.appendChild(this._canvas);
 
     this._draw();
   }
@@ -119,8 +123,14 @@ export class ThorWidget extends Widget {
     const frame = this._frame;
     if (!frame) return;
 
-    const vw = rect.width;
-    const vh = rect.height;
+    let vw = rect.width;
+    let vh = rect.height;
+    if (this._cameraSize?.[0] && this._cameraSize[1]) {
+      const scale = Math.max(vw / this._cameraSize[0], vh / this._cameraSize[1]);
+      vw = this._cameraSize[0] * scale;
+      vh = this._cameraSize[1] * scale;
+      ctx.translate((rect.width - vw) / 2, (rect.height - vh) / 2);
+    }
 
     // Draw hands
     for (let i = 0; i < frame.hands.length; i++) {
@@ -130,7 +140,7 @@ export class ThorWidget extends Widget {
     }
 
     // Draw mode indicator (counter-flipped so text reads correctly)
-    this._drawModeIndicator(ctx, vw);
+    // The demo supplies one accessible status indicator outside the canvas.
 
     // Delegate to handler render() methods
     const registered = getActiveGestures();
@@ -149,8 +159,9 @@ export class ThorWidget extends Widget {
     vh: number
   ): void {
     // Determine hand state from pinch detection
-    const pinching = isPinching(landmarks, 0.06);
-    const highConfidence = confidence > 0.45;
+    const threshold = cfg.pinchThreshold * (confidence > 0.8 ? 1.5 : confidence > 0.6 ? 1.3 : 1);
+    const pinching = isPinching(landmarks, threshold);
+    const highConfidence = confidence >= cfg.minConfidence;
     const palette = pinching && highConfidence
       ? COLORS.confirmed
       : pinching
@@ -210,48 +221,4 @@ export class ThorWidget extends Widget {
     }
   }
 
-  private _drawModeIndicator(ctx: CanvasRenderingContext2D, vw: number): void {
-    // Determine mode from active gestures
-    let label: string | null = null;
-    let color: (typeof COLORS)[keyof typeof COLORS] = COLORS.dwelling;
-
-    if (this._activeGestures.includes("fist")) {
-      label = "Switch";
-      color = COLORS.confirmed;
-    } else if (this._activeGestures.includes("pinch-zoom")) {
-      label = "Zoom";
-      color = COLORS.confirmed;
-    } else if (this._activeGestures.includes("pinch-rotate")) {
-      label = "Rotate";
-      color = COLORS.dwelling;
-    } else if (this._activeGestures.includes("pinch-pan")) {
-      label = "Pan";
-      color = COLORS.dwelling;
-    }
-
-    if (!label) return;
-
-    ctx.font = "500 11px -apple-system, BlinkMacSystemFont, sans-serif";
-    const textWidth = ctx.measureText(label).width;
-    const pillW = textWidth + 16;
-    const pillH = 22;
-    // Counter-flip: canvas is scaleX(-1), so we flip this section back
-    const x = vw - pillW - 12;
-    const y = 12;
-
-    ctx.save();
-    ctx.scale(-1, 1);
-    ctx.translate(-vw, 0);
-
-    ctx.fillStyle = rgba(color.tip, 0.15);
-    ctx.beginPath();
-    ctx.roundRect(x, y, pillW, pillH, 11);
-    ctx.fill();
-
-    ctx.fillStyle = rgba(color.tip, 0.8);
-    ctx.textBaseline = "middle";
-    ctx.fillText(label, x + 8, y + pillH / 2);
-
-    ctx.restore();
-  }
 }

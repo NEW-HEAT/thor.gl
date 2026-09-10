@@ -8,6 +8,7 @@
 
 import type { GestureHandler, GestureDetection, ViewState, GestureConfig } from "../types";
 import type { ThorFrame } from "../../detection/types";
+import { gestureConfig as cfg } from "../config";
 import { HAND, distance } from "../../detection/landmarks";
 
 /** Check if all fingers are extended (rough heuristic). */
@@ -55,8 +56,8 @@ export const openPalm: GestureHandler = {
   requires: ["hands"],
 
   detect(frame: ThorFrame): GestureDetection | null {
-    for (const hand of frame.hands) {
-      if (isOpenPalm(hand)) {
+    for (let i = 0; i < frame.hands.length; i++) {
+      if ((frame.handConfidences[i] ?? 0) >= cfg.minConfidence && isOpenPalm(frame.hands[i])) {
         return { gesture: "open-palm", data: {} };
       }
     }

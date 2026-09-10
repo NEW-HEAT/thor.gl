@@ -3,6 +3,8 @@ name: Deploy demo to GitHub Pages
 on:
   push:
     branches: [master]
+  pull_request:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +13,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -22,11 +24,15 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install demo dependencies
         working-directory: demo
-        run: npm install
+        run: npm ci
+
+      - name: Type check and test
+        working-directory: demo
+        run: npm run typecheck && npm test
 
       - name: Build demo
         working-directory: demo
@@ -37,6 +43,7 @@ jobs:
           path: demo/dist
 
   deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-latest
     environment:

@@ -42,13 +42,14 @@ export const pinchRotate: GestureHandler = {
   detect(frame: ThorFrame): GestureDetection | null {
     const { hands, handConfidences } = frame;
     if (hands.length < 2) {
-      prevAngle = null;
+      this.reset?.();
       return null;
     }
 
     const now = frame.timestamp;
-    if (!confirmPinch(0, hands[0], handConfidences[0] ?? 0, now) ||
-        !confirmPinch(1, hands[1], handConfidences[1] ?? 0, now)) {
+    const first = confirmPinch(0, hands[0], handConfidences[0] ?? 0, now);
+    const second = confirmPinch(1, hands[1], handConfidences[1] ?? 0, now);
+    if (!first || !second) {
       prevAngle = null;
       return null;
     }
@@ -65,13 +66,13 @@ export const pinchRotate: GestureHandler = {
     }
 
     let delta = angle - prevAngle;
-    prevAngle = angle;
 
     // Normalize to [-PI, PI]
     if (delta > Math.PI) delta -= 2 * Math.PI;
     if (delta < -Math.PI) delta += 2 * Math.PI;
 
     if (Math.abs(delta) < cfg.rotateDeadzone) return null;
+    prevAngle = angle;
 
     return {
       gesture: "pinch-rotate",

@@ -53,7 +53,7 @@ export const pinchZoom: GestureHandler = {
   detect(frame: ThorFrame): GestureDetection | null {
     const { hands, handConfidences } = frame;
     if (hands.length < 2) {
-      prevDistance = null;
+      this.reset?.();
       return null;
     }
 
@@ -83,6 +83,7 @@ export const pinchZoom: GestureHandler = {
     }
 
     const distanceDelta = currentDistance - prevDistance;
+    if (Math.abs(distanceDelta) < cfg.zoomDeadzone) return null;
     prevDistance = currentDistance;
 
     return {

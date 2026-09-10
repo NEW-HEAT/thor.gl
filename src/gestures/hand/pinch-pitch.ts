@@ -43,13 +43,14 @@ export const pinchPitch: GestureHandler = {
   detect(frame: ThorFrame): GestureDetection | null {
     const { hands, handConfidences } = frame;
     if (hands.length < 2) {
-      prevAvgY = null;
+      this.reset?.();
       return null;
     }
 
     const now = frame.timestamp;
-    if (!confirmPinch(0, hands[0], handConfidences[0] ?? 0, now) ||
-        !confirmPinch(1, hands[1], handConfidences[1] ?? 0, now)) {
+    const first = confirmPinch(0, hands[0], handConfidences[0] ?? 0, now);
+    const second = confirmPinch(1, hands[1], handConfidences[1] ?? 0, now);
+    if (!first || !second) {
       prevAvgY = null;
       return null;
     }
@@ -67,9 +68,9 @@ export const pinchPitch: GestureHandler = {
     }
 
     const delta = avgY - prevAvgY;
-    prevAvgY = avgY;
 
     if (Math.abs(delta) < cfg.pitchDeadzone) return null;
+    prevAvgY = avgY;
 
     return {
       gesture: "pinch-pitch",

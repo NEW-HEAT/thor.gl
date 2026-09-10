@@ -90,6 +90,9 @@ export interface GestureHandler {
    */
   onActivate?(): void;
 
+  /** Called once for each winning detection, outside replayable state updaters. */
+  onTrigger?(detection: GestureDetection): void;
+
   /**
    * Optional: called when the gesture deactivates (was active, now isn't).
    */

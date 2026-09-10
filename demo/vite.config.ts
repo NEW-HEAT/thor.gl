@@ -3,13 +3,13 @@ import react from "@vitejs/plugin-react-swc";
 import basicSsl from "@vitejs/plugin-basic-ssl";
 import { join } from "path";
 
-const root = join(__dirname, "..");
-const demoModules = join(__dirname, "node_modules");
+const root = join(import.meta.dirname, "..");
+const demoModules = join(import.meta.dirname, "node_modules");
 const useHttps = !!process.env.HTTPS;
 
 export default defineConfig({
   plugins: [react(), ...(useHttps ? [basicSsl()] : [])],
-  root: __dirname,
+  root: import.meta.dirname,
   base: "/",
   resolve: {
     alias: {
