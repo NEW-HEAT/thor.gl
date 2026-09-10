@@ -14,6 +14,8 @@ export interface ViewState {
   zoom: number;
   pitch?: number;
   bearing?: number;
+  /** deck.gl transition state may be present after pointer navigation. */
+  transitionDuration?: number | "auto";
 }
 
 /** What a gesture handler detects */
@@ -26,9 +28,11 @@ export interface GestureDetection {
 
 /** Configuration passed to apply() */
 export interface GestureConfig {
+  panViewState?: (viewState: ViewState, delta: { dx: number; dy: number }, sensitivity: number) => ViewState;
   panSensitivity: number;
   zoomSensitivity: number;
   zoomDeadzone: number;
+  minZoom?: number;
 }
 
 /** Registration options */
@@ -62,6 +66,9 @@ export interface GestureHandler {
    */
   detect(frame: ThorFrame): GestureDetection | null;
 
+  /** Advance release momentum at display refresh rate, without rerunning detection. */
+  animate?(timestamp: number): GestureDetection | null;
+
   /**
    * Apply detected gesture to viewState. Pure function.
    * Return the new viewState (or the same reference if no change).
@@ -89,6 +96,9 @@ export interface GestureHandler {
    * Useful for side effects like haptic feedback, sound, UI state changes.
    */
   onActivate?(): void;
+
+  /** Called once for each winning detection, outside replayable state updaters. */
+  onTrigger?(detection: GestureDetection): void;
 
   /**
    * Optional: called when the gesture deactivates (was active, now isn't).

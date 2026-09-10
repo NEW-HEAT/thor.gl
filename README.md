@@ -6,25 +6,27 @@
 
 ## Demo
 
-The live demo showcases all three output channels on a satellite globe with 20 pickable cities:
+The demo uses **deck.gl 9.4** and **MediaPipe Tasks Vision 1.0.1**. Explore a vector atlas of countries and coastlines, or choose **Use hands** for a mirrored live camera background and hand navigation. Country geometry follows the globe directly, including the poles, without raster tiles.
 
-- **Navigation** — pinch-pan, pinch-zoom, pinch-rotate, pinch-pitch with hand gestures
-- **Picking** — hover and click cities to select
-- **Signals** — fist toggles globe/mercator, open-palm fires a toast notification
+- Pinch one hand to grab and move; pinch both to zoom. Open a palm to stop.
+- Enable optional twist, tilt, and fist-to-switch gestures in **Controls**.
+- Pause motion, show/hide the camera background, or stop the camera completely.
+- Tune sensitivity, release inertia, individual gestures, landmarks, and camera visibility in **Controls**.
+- Mouse/touch navigation, zoom buttons, and country/city picking stay available throughout.
 
-Toggle between **Mjolnir** (mouse/touch) and **Thor** (hand tracking) modes. Gesture cards on the right show live status with channel tags — click the checkbox to enable/disable any gesture at runtime.
+The bundled Natural Earth atlas is designed for world and regional exploration (zoom 0–6), with country names appearing as you zoom in. Panning preserves the globe's apparent size at high latitudes. The opening view fits narrow screens.
 
-Additional demo features: live camera feed with hand skeleton overlay (debug panel), collapsible event log, camera indicator, attention gate (experimental), and 9-point gaze calibration flow (experimental).
+The default UI is a compact control dock. Camera permission, model loading, errors, and retries have visible states. Camera frames stay on the device; the camera and tracking model are shared by the background and controls.
 
-> Requires a webcam. For LAN access from another device: `HTTPS=1 npx vite --host`
-
-To run locally:
+See [DEMO.md](DEMO.md) for the rehearsal guide and the current validation boundaries, [CHANGELOG.md](CHANGELOG.md) for release notes, and [atlas attribution](demo/public/data/README.md) for the bundled data source.
 
 ```bash
 cd demo
-npm install
-npx vite --host
+npm ci
+npm run dev
 ```
+
+Requires Node 22.12+ or 20.19+, and HTTPS or localhost for camera access.
 
 ## Quick start
 
@@ -38,10 +40,11 @@ function MyMap() {
 
   setFistAction(() => console.log("fist!"));
 
-  const { widgets } = useThor({
+  const { widgets, status, error, video, retry } = useThor({
     setViewState,
-    detector: "holistic",  // "hands" | "holistic" | "auto"
+    detector: "hands",  // "hands" | "holistic" | "auto"
     enabled: true,
+    paused: false, // pause navigation while keeping camera and landmarks live
   });
 
   return (
@@ -53,6 +56,8 @@ function MyMap() {
   );
 }
 ```
+
+`status` is `idle`, `camera`, `model`, `running`, or `error`; `error` holds a startup or tracking failure, and `retry()` restarts the session. `video` exposes the shared camera element for a background. Set `cameraOverlay: true` to align landmarks with a background using `object-fit: cover`, or `showOverlay: false` to hide landmarks. Changing `config`, `gestures`, or `paused` keeps the current camera session; setting `enabled: false` stops it.
 
 ### Thor class (framework-agnostic)
 
@@ -124,11 +129,13 @@ const { widgets } = useThor({
     minConfidence: 0.5,
     grabDelay: 100,
     pinchThreshold: 0.06,
-    panSensitivity: 5.0,
+    panSensitivity: 1.6,
     panSmoothing: 0.4,
+    inertiaDuration: 280, // milliseconds, capped at 600; 0 disables hand momentum
     panMoveDeadzone: 0.004,
-    zoomSensitivity: 10,
-    zoomDeadzone: 0.015,
+    zoomSensitivity: 1, // multiplier of log2(hand span ratio)
+    zoomDeadzone: 0.008,
+    minZoom: 0,
     rotateSensitivity: 40,
     rotateDeadzone: 0.015,
     pitchSensitivity: 80,
@@ -138,6 +145,8 @@ const { widgets } = useThor({
   },
 });
 ```
+
+These are library defaults. The demo uses a 35 ms grab confirmation and a smaller pan deadzone for prompt pickup. Its optional `panViewState(viewState, {dx, dy}, sensitivity)` hook callback maps normalized camera movement through deck.gl's native controller state, accounting for the mirrored camera, viewport, bearing, pitch, and globe latitude correction. See [demo/navigation.ts](demo/navigation.ts) and its wiring in [demo/App.tsx](demo/App.tsx). The demo sets `minZoom: -6` to allow deck.gl's negative polar zoom correction while bounding the visible zoom range separately.
 
 ## Custom gestures
 
@@ -189,8 +198,8 @@ Camera  -->  MediaPipe (Hand / Holistic)  -->  ThorFrame
 
 ## Peer dependencies
 
-- `@deck.gl/core` >= 9
-- `@mediapipe/tasks-vision`
+- `@deck.gl/core` ^9.4.0
+- `@mediapipe/tasks-vision` ^1.0.1
 - `react` >= 18
 
 ## License

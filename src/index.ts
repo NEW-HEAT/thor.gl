@@ -106,7 +106,7 @@ export { blink } from "./gestures/face/blink";
 export { lean } from "./gestures/pose/lean";
 
 // ── Engine (advanced usage) ──
-export { createEngine, type EngineConfig, type EngineHandle } from "./engine";
+export { createEngine, type EngineConfig, type EngineHandle, type EngineStatus } from "./engine";
 
 // ── Utilities ──
 export { hideCursor, showCursor } from "./util/pointer-emulation";

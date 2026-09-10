@@ -7,7 +7,7 @@
  * Not a React hook — pure imperative lifecycle managed by useThor.
  */
 
-import { initDetector, detect, destroyDetector, isReady } from "./detection/detector";
+import { createDetector } from "./detection/detector";
 import type { ThorFrame, DetectorMode, BodyPart } from "./detection/types";
 import { EMPTY_FRAME } from "./detection/types";
 import {
@@ -18,19 +18,27 @@ import {
 } from "./gestures";
 import { resolveConflicts } from "./gestures/conflicts";
 import { gestureConfig as cfg } from "./gestures/config";
-import { hideCursor, showCursor } from "./util/pointer-emulation";
+
+export type EngineStatus = "idle" | "camera" | "model" | "running" | "error";
 
 export interface EngineConfig {
+  panViewState?: GestureConfig["panViewState"];
   detector: DetectorMode;
   gestures?: string[];
   onViewStateChange: (updater: (vs: ViewState) => ViewState) => void;
   onViewStateNotify?: (vs: ViewState) => void;
   onFrame?: (frame: ThorFrame) => void;
+  onStatus?: (status: EngineStatus, error?: Error) => void;
+  onVideo?: (video: HTMLVideoElement | null) => void;
+  paused?: boolean;
 }
 
 export interface EngineHandle {
   start(): Promise<void>;
   stop(): void;
+  setPaused(paused: boolean): void;
+  setGestures(gestures?: string[]): void;
+  reset(): void;
   /** Get the latest ThorFrame (for widget rendering) */
   getLatestFrame(): ThorFrame;
   /** Get currently active gesture names */
@@ -44,33 +52,51 @@ export function createEngine(config: EngineConfig): EngineHandle {
   let stream: MediaStream | null = null;
   let animationId = 0;
   let mounted = false;
-  let cursorHidden = false;
+  const detector = createDetector();
+  let generation = 0;
+  let controlVersion = 0;
+  let paused = config.paused ?? false;
+  let gestureNames = config.gestures;
   let latestFrame: ThorFrame = EMPTY_FRAME;
   let activeGestureNames: string[] = [];
   // Track which handlers were active last frame for onActivate/onDeactivate
   const wasActive = new Set<string>();
 
   const gcfg: GestureConfig = {
+    get panViewState() { return config.panViewState; },
     get panSensitivity() { return cfg.panSensitivity; },
     get zoomSensitivity() { return cfg.zoomSensitivity; },
     get zoomDeadzone() { return cfg.zoomDeadzone; },
+    get minZoom() { return cfg.minZoom; },
   };
+
+  function applyChanges(changes: { detection: import("./gestures").GestureDetection;
+    apply: import("./gestures").GestureHandler["apply"] }[]) {
+    if (!changes.length) return;
+    const version = controlVersion;
+    config.onViewStateChange(vs => {
+      if (!mounted || paused || version !== controlVersion) return vs;
+      let next = vs;
+      for (const change of changes) next = change.apply(change.detection, next, gcfg);
+      // Hand samples and our release integration already describe the displayed pose.
+      // A leftover pointer transition would otherwise restart on every sample.
+      if (next !== vs) next = { ...next, transitionDuration: 0 };
+      if (next !== vs) config.onViewStateNotify?.(next);
+      return next;
+    });
+  }
 
   function processFrame(frame: ThorFrame) {
     latestFrame = frame;
 
-    // Cursor management
-    const hasHands = frame.hands.length > 0;
-    if (hasHands && !cursorHidden) {
-      hideCursor();
-      cursorHidden = true;
-    } else if (!hasHands && cursorHidden) {
-      showCursor();
-      cursorHidden = false;
+    if (paused) {
+      activeGestureNames = [];
+      config.onFrame?.(frame);
+      return;
     }
 
     // Fan-out: run all active gesture handlers
-    const registered = getActiveGestures(config.gestures);
+    const registered = getActiveGestures(gestureNames);
     const detections: {
       detection: import("./gestures").GestureDetection;
       priority: number;
@@ -88,8 +114,7 @@ export function createEngine(config: EngineConfig): EngineHandle {
         return false;
       });
 
-      // Special case: hand gesture handlers should still run when no hands
-      // are visible so they can trigger inertia
+      // Hand handlers also consume empty frames to clear tracking baselines.
       const isHandGesture = handler.requires.length === 1 && handler.requires[0] === "hands";
 
       if (!hasRequired && !isHandGesture) continue;
@@ -107,7 +132,16 @@ export function createEngine(config: EngineConfig): EngineHandle {
     }
 
     // Resolve conflicts
-    const winners = resolveConflicts(detections);
+    let winners = resolveConflicts(detections);
+    if (winners.some(w => w.detection.gesture === "open-palm")) {
+      for (const { handler } of registered) {
+        if (handler.name.startsWith("pinch-")) handler.reset?.();
+      }
+      winners = winners.filter(w => !w.detection.gesture.startsWith("pinch-"));
+    }
+    for (const winner of winners) {
+      registered.find(g => g.handler.name === winner.detection.gesture)?.handler.onTrigger?.(winner.detection);
+    }
     const currentActive = new Set(winners.map((w) => w.detection.gesture));
     activeGestureNames = Array.from(currentActive);
 
@@ -124,146 +158,123 @@ export function createEngine(config: EngineConfig): EngineHandle {
     for (const name of currentActive) wasActive.add(name);
 
     // Apply viewState changes
-    if (winners.length > 0) {
-      config.onViewStateChange((vs) => {
-        let newVs = vs;
-        for (const winner of winners) {
-          newVs = winner.apply(winner.detection, newVs, gcfg);
-        }
-        if (newVs !== vs) {
-          config.onViewStateNotify?.(newVs);
-        }
-        return newVs;
-      });
-    }
+    applyChanges(winners);
 
     // Notify after processing so widget/debug gets current active gestures
     config.onFrame?.(frame);
   }
 
+  function reset() {
+    controlVersion++;
+    for (const { handler } of getActiveGestures(gestureNames)) {
+      if (wasActive.has(handler.name)) handler.onDeactivate?.();
+      handler.reset?.();
+    }
+    activeGestureNames = [];
+    wasActive.clear();
+  }
+
+  function stop() {
+    mounted = false;
+    generation++;
+    cancelAnimationFrame(animationId);
+    animationId = 0;
+    stream?.getTracks().forEach(t => t.stop());
+    stream = null;
+    if (video) { video.srcObject = null; video.remove(); video = null; }
+    config.onVideo?.(null);
+    reset();
+    latestFrame = EMPTY_FRAME;
+    detector.destroy();
+    config.onStatus?.("idle");
+  }
+
   return {
     async start() {
+      if (mounted) return;
       mounted = true;
-
-      // Determine required body parts from registered gestures
-      const registered = getActiveGestures(config.gestures);
-      const requiredParts = getRequiredParts(registered);
-
-      await initDetector({
-        mode: config.detector,
-        requiredParts,
-        numHands: 2,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
-      });
-
-      if (!mounted) return;
-
-      // Create hidden video element
-      video = document.createElement("video");
-      video.setAttribute("autoplay", "");
-      video.setAttribute("playsinline", "");
-      video.muted = true;
-      Object.assign(video.style, {
-        position: "fixed",
-        top: "-9999px",
-        left: "-9999px",
-        width: "1px",
-        height: "1px",
-        opacity: "0",
-        pointerEvents: "none",
-      });
-      document.body.appendChild(video);
-
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: "user",
-          width: { ideal: 640 },
-          height: { ideal: 480 },
-        },
-        audio: false,
-      });
-
-      if (!mounted) {
-        stream.getTracks().forEach((t) => t.stop());
-        video.remove();
-        return;
-      }
-
-      video.srcObject = stream;
-      await video.play();
-
-      // Detection loop at ~30fps
-      let lastTime = 0;
-      const FPS_INTERVAL = 1000 / 30;
-
-      function loop(timestamp: number) {
-        if (!mounted) return;
-
-        const elapsed = timestamp - lastTime;
-        if (elapsed >= FPS_INTERVAL) {
-          lastTime = timestamp;
-          if (video && isReady()) {
-            const frame = detect(video, timestamp);
-            if (frame) {
-              processFrame(frame);
-            } else {
-              latestFrame = EMPTY_FRAME;
-              if (cursorHidden) {
-                showCursor();
-                cursorHidden = false;
-              }
+      const token = ++generation;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      const current = () => mounted && token === generation;
+      try {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          throw new Error("Camera access requires HTTPS or localhost. Open the secure demo URL.");
+        }
+        config.onStatus?.("camera");
+        await Promise.race([
+          (async () => {
+            const acquired = await navigator.mediaDevices.getUserMedia({
+              video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30, max: 30 } },
+              audio: false,
+            });
+            if (!current()) { acquired.getTracks().forEach(t => t.stop()); return; }
+            stream = acquired;
+            const source = document.createElement("video");
+            video = source;
+            source.autoplay = true;
+            source.playsInline = true;
+            source.muted = true;
+            source.style.cssText = "position:fixed;left:-9999px;width:1px;height:1px;pointer-events:none";
+            document.body.appendChild(source);
+            source.srcObject = acquired;
+            await source.play();
+            if (!current()) return;
+            acquired.getVideoTracks().forEach(track => track.addEventListener("ended", () => {
+              if (!current()) return;
+              stop();
+              config.onStatus?.("error", new Error("The camera disconnected. Reconnect it and try again."));
+            }, { once: true }));
+            config.onVideo?.(source);
+            config.onStatus?.("model");
+            await detector.init({ mode: config.detector, requiredParts: getRequiredParts(getActiveGestures(gestureNames)), numHands: 2 });
+          })(),
+          new Promise<never>((_, reject) => {
+            deadline = setTimeout(() => reject(new Error("Camera or tracking model took too long to start. Check camera permission and your connection, then retry.")), 45000);
+          }),
+        ]);
+        if (!current()) return;
+        config.onStatus?.("running");
+        let lastTime = 0;
+        let lastVideoTime = -1;
+        function loop(timestamp: number) {
+          if (!current()) return;
+          try {
+            if (timestamp - lastTime >= 1000 / 30 && video && video.currentTime !== lastVideoTime && !document.hidden) {
+              lastTime = timestamp;
+              lastVideoTime = video.currentTime;
+              const frame = detector.detect(video, timestamp);
+              processFrame(frame ?? { ...EMPTY_FRAME, timestamp });
+            } else if (!paused && !document.hidden) {
+              // Decay at display refresh rate, not the slower camera/model rate.
+              const changes = getActiveGestures(gestureNames).flatMap(({ handler }) => {
+                const detection = handler.animate?.(timestamp);
+                return detection ? [{ detection, apply: handler.apply.bind(handler) }] : [];
+              });
+              applyChanges(changes);
             }
+            animationId = requestAnimationFrame(loop);
+          } catch (error) {
+            stop();
+            config.onStatus?.("error", error instanceof Error ? error : new Error(String(error)));
           }
         }
-
         animationId = requestAnimationFrame(loop);
+      } catch (error) {
+        if (!current()) return;
+        stop();
+        const failure = error instanceof Error ? error : new Error(String(error));
+        config.onStatus?.("error", failure);
+        throw failure;
+      } finally {
+        clearTimeout(deadline);
       }
-
-      animationId = requestAnimationFrame(loop);
     },
-
-    stop() {
-      mounted = false;
-      if (animationId) {
-        cancelAnimationFrame(animationId);
-        animationId = 0;
-      }
-      if (stream) {
-        stream.getTracks().forEach((t) => t.stop());
-        stream = null;
-      }
-      if (video) {
-        video.remove();
-        video = null;
-      }
-      if (cursorHidden) {
-        showCursor();
-        cursorHidden = false;
-      }
-
-      // Reset all gesture handler state
-      const registered = getActiveGestures(config.gestures);
-      for (const { handler } of registered) {
-        handler.reset?.();
-      }
-
-      latestFrame = EMPTY_FRAME;
-      activeGestureNames = [];
-      wasActive.clear();
-      destroyDetector();
-    },
-
-    getLatestFrame() {
-      return latestFrame;
-    },
-
-    getActiveGestureNames() {
-      return activeGestureNames;
-    },
-
-    getVideo() {
-      return video;
-    },
+    stop,
+    reset,
+    setPaused(value) { if (paused !== value) { reset(); paused = value; } },
+    setGestures(value) { reset(); gestureNames = value; },
+    getLatestFrame: () => latestFrame,
+    getActiveGestureNames: () => activeGestureNames,
+    getVideo: () => video,
   };
 }

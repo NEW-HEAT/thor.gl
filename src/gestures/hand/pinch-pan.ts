@@ -1,59 +1,69 @@
-/**
- * Pinch-Pan gesture: 1-hand pinch + drag → pan the viewport.
- *
- * Ported from thor's useGestureViewState — same math, new interface.
- * Includes inertia: releasing a pan gesture carries momentum forward.
- */
-
-import type { GestureHandler, GestureDetection, ViewState, GestureConfig } from "../types";
-import type { ThorFrame } from "../../detection/types";
-import { isPinching, pinchCenter, HAND, FINGERTIPS } from "../../detection/landmarks";
+/** One-hand pinch navigation with time-based release momentum. */
+import type { GestureHandler, GestureDetection, ViewState } from "../types";
+import type { ThorFrame, HandLandmarks } from "../../detection/types";
+import { isPinching, pinchCenter } from "../../detection/landmarks";
 import { gestureConfig as cfg } from "../config";
 
-// ── Internal state (lives in the handler, reset on deactivate) ──
-
-let prevCenter: { x: number; y: number } | null = null;
-let velocity = { vx: 0, vy: 0 };
-let inertiaActive = false;
-let wasPanning = false;
-
-// Confirmation state per hand
+const FRAME_MS = 1000 / 30;
+const MIN_SPEED = 0.025; // normalized camera widths/second
+const MAX_SPEED = 0.35;
 const pinchStartTimes: (number | null)[] = [null, null];
+let anchor: { x: number; y: number } | null = null;
+let sample: { x: number; y: number; time: number } | null = null;
+let filtered: { x: number; y: number } | null = null;
+let velocity = { x: 0, y: 0 };
+let panningSide: string | null = null;
+let wasPanning = false;
+let previousTime: number | null = null;
+let coastStart: number | null = null;
+let coastElapsed = 0;
+let pending: { side: string; center: { x: number; y: number }; time: number } | null = null;
 
-const INERTIA_FRICTION = 0.92;
-const INERTIA_THRESHOLD = 0.00005;
+function clearMotion() {
+  anchor = null;
+  sample = null;
+  filtered = null;
+  velocity = { x: 0, y: 0 };
+  panningSide = null;
+  wasPanning = false;
+  coastStart = null;
+  coastElapsed = 0;
+  pending = null;
+}
 
-function confirmPinch(
-  handIndex: number,
-  landmarks: import("../../detection/types").HandLandmarks | undefined,
-  confidence: number,
-  now: number
-): { confirmed: boolean; dwelling: boolean } {
-  if (!landmarks || confidence < cfg.minConfidence) {
-    pinchStartTimes[handIndex] = null;
+function confirmPinch(index: number, hand: HandLandmarks | undefined, confidence: number, now: number) {
+  const threshold = cfg.pinchThreshold * (confidence > 0.8 ? 1.5 : confidence > 0.6 ? 1.3 : 1);
+  if (!hand || confidence < cfg.minConfidence || !isPinching(hand, threshold)) {
+    pinchStartTimes[index] = null;
     return { confirmed: false, dwelling: false };
   }
-
-  // Adaptive threshold
-  const threshold =
-    confidence > 0.8
-      ? cfg.pinchThreshold * 1.5
-      : confidence > 0.6
-        ? cfg.pinchThreshold * 1.3
-        : cfg.pinchThreshold;
-
-  if (!isPinching(landmarks, threshold)) {
-    pinchStartTimes[handIndex] = null;
-    return { confirmed: false, dwelling: false };
-  }
-
-  if (pinchStartTimes[handIndex] === null) {
-    pinchStartTimes[handIndex] = now;
-  }
-
-  const elapsed = now - pinchStartTimes[handIndex]!;
-  const confirmed = elapsed >= cfg.grabDelay;
+  pinchStartTimes[index] ??= now;
+  const confirmed = now - pinchStartTimes[index]! >= cfg.grabDelay;
   return { confirmed, dwelling: !confirmed };
+}
+
+function coast(now: number, dt: number): GestureDetection | null {
+  const duration = Math.max(0, Math.min(600, cfg.inertiaDuration));
+  if (!duration) { clearMotion(); return null; }
+  if (wasPanning) {
+    wasPanning = false;
+    anchor = null;
+    sample = null;
+    panningSide = null;
+    if (Math.hypot(velocity.x, velocity.y) < MIN_SPEED) { clearMotion(); return null; }
+    coastStart = now - dt;
+    coastElapsed = 0;
+  }
+  if (coastStart === null) return null;
+  const elapsed = Math.min(duration, now - coastStart);
+  const tau = duration / 4;
+  // Integrate exponential drag over the frame, independent of detection FPS.
+  const distance = tau / 1000 * (Math.exp(-coastElapsed / tau) - Math.exp(-elapsed / tau));
+  const dx = velocity.x * distance;
+  const dy = velocity.y * distance;
+  coastElapsed = elapsed;
+  if (elapsed >= duration) clearMotion();
+  return distance > 0 ? { gesture: "pinch-pan", data: { dx, dy, inertia: true } } : null;
 }
 
 export const pinchPan: GestureHandler = {
@@ -61,151 +71,102 @@ export const pinchPan: GestureHandler = {
   requires: ["hands"],
 
   detect(frame: ThorFrame): GestureDetection | null {
-    const { hands, handConfidences } = frame;
-    if (hands.length === 0) {
-      // No hands — check if we should trigger inertia
-      if (wasPanning) {
-        const speed = Math.sqrt(velocity.vx * velocity.vx + velocity.vy * velocity.vy);
-        if (speed > INERTIA_THRESHOLD) {
-          inertiaActive = true;
-        }
-        wasPanning = false;
-        prevCenter = null;
-      }
-
-      if (inertiaActive) {
-        // Tick inertia
-        velocity.vx *= INERTIA_FRICTION;
-        velocity.vy *= INERTIA_FRICTION;
-        const speed = Math.sqrt(velocity.vx * velocity.vx + velocity.vy * velocity.vy);
-        if (speed < INERTIA_THRESHOLD) {
-          inertiaActive = false;
-          velocity = { vx: 0, vy: 0 };
-          return null;
-        }
-        return {
-          gesture: "pinch-pan",
-          data: { inertia: true, vx: velocity.vx, vy: velocity.vy },
-        };
-      }
-      return null;
-    }
-
     const now = frame.timestamp;
-    const hand1 = confirmPinch(0, hands[0], handConfidences[0] ?? 0, now);
-    const hand2 = confirmPinch(1, hands[1], handConfidences[1] ?? 0, now);
+    const gap = previousTime === null ? FRAME_MS : now - previousTime;
+    previousTime = now;
+    // Do not carry stale movement across a stalled camera or background tab.
+    if (gap > 200 || gap < 0) { clearMotion(); pinchStartTimes.fill(null); }
+    const dt = Math.max(1, Math.min(80, gap));
+    const first = confirmPinch(0, frame.hands[0], frame.handConfidences[0] ?? 0, now);
+    const second = confirmPinch(1, frame.hands[1], frame.handConfidences[1] ?? 0, now);
+    // A second pinch takes over immediately, including its confirmation period.
+    if ((first.confirmed || first.dwelling) && (second.confirmed || second.dwelling)) { clearMotion(); return null; }
 
-    // Two hands confirmed = zoom territory, not pan
-    if (hand1.confirmed && hand2.confirmed) {
-      prevCenter = null;
-      wasPanning = false;
-      return null;
+    const index = first.confirmed ? 0 : second.confirmed ? 1 : -1;
+    if (index < 0) {
+      // Catch the globe as soon as a new pinch starts, before dwell confirmation.
+      if (first.dwelling || second.dwelling) {
+        const waiting = first.dwelling ? 0 : 1;
+        const center = pinchCenter(frame.hands[waiting]);
+        const side = frame.handedness[waiting];
+        const start = pending?.side === side ? pending : null;
+        clearMotion();
+        if (center) pending = start ?? { side, center, time: now };
+        return null;
+      }
+      pending = null;
+      // Occlusion and low-confidence tracking are not intentional releases.
+      if (!frame.hands.length || (panningSide !== null && !frame.handedness.some((side, i) =>
+        side === panningSide && frame.handConfidences[i] >= cfg.minConfidence))) {
+        clearMotion(); return null;
+      }
+      return coast(now, dt);
     }
 
-    // One hand confirmed = pan
-    const panningHandIndex = hand1.confirmed ? 0 : hand2.confirmed ? 1 : -1;
-    if (panningHandIndex === -1) {
-      // No confirmed pinch — trigger inertia if we were panning
-      if (wasPanning) {
-        const speed = Math.sqrt(velocity.vx * velocity.vx + velocity.vy * velocity.vy);
-        if (speed > INERTIA_THRESHOLD) {
-          inertiaActive = true;
-        }
-        wasPanning = false;
-        prevCenter = null;
-      }
-
-      if (inertiaActive) {
-        velocity.vx *= INERTIA_FRICTION;
-        velocity.vy *= INERTIA_FRICTION;
-        const speed = Math.sqrt(velocity.vx * velocity.vx + velocity.vy * velocity.vy);
-        if (speed < INERTIA_THRESHOLD) {
-          inertiaActive = false;
-          velocity = { vx: 0, vy: 0 };
-          return null;
-        }
-        return {
-          gesture: "pinch-pan",
-          data: { inertia: true, vx: velocity.vx, vy: velocity.vy },
-        };
-      }
-
-      return null;
+    const center = pinchCenter(frame.hands[index]);
+    if (!center) { clearMotion(); return null; }
+    const side = frame.handedness[index];
+    if (panningSide !== side || !sample || !anchor || !filtered) {
+      const start = pending?.side === side && now - pending.time <= 150 ? pending : null;
+      clearMotion();
+      panningSide = side;
+      anchor = start?.center ?? center;
+      sample = { ...(start?.center ?? center), time: start?.time ?? now };
+      filtered = { ...(start?.center ?? center) };
+      wasPanning = true;
+      if (!start) return null;
     }
-
-    const center = pinchCenter(hands[panningHandIndex]);
-    if (!center) return null;
-
-    inertiaActive = false;
+    coastStart = null;
     wasPanning = true;
-
-    if (!prevCenter) {
-      prevCenter = center;
-      return null; // first frame, no delta yet
+    const sampleMs = Math.max(1, now - sample.time);
+    // Reject relocalization spikes instead of turning them into a jump or fling.
+    if (Math.hypot(center.x - sample.x, center.y - sample.y) > Math.max(0.1, sampleMs * 0.0025)) {
+      anchor = { ...center }; filtered = { ...center }; sample = { ...center, time: now };
+      velocity = { x: 0, y: 0 }; return null;
     }
+    const smoothing = 1 - Math.pow(1 - cfg.panSmoothing, sampleMs / FRAME_MS);
+    const speedX = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, (center.x - sample.x) * 1000 / sampleMs));
+    const speedY = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, (center.y - sample.y) * 1000 / sampleMs));
+    // Still samples reduce velocity, so holding before release does not fling.
+    velocity.x += (speedX - velocity.x) * smoothing;
+    velocity.y += (speedY - velocity.y) * smoothing;
+    sample = { ...center, time: now };
+    // A short positional filter removes landmark tremor without a long trailing hand.
+    const alpha = 1 - Math.exp(-sampleMs / 12);
+    filtered.x += (center.x - filtered.x) * alpha;
+    filtered.y += (center.y - filtered.y) * alpha;
+    const rawX = filtered.x - anchor.x;
+    const rawY = filtered.y - anchor.y;
+    const distance = Math.hypot(rawX, rawY);
+    if (distance <= cfg.panMoveDeadzone) return null;
+    // Leave a small slack region; crossing it must not dump a whole deadzone at once.
+    const gain = 1 - cfg.panMoveDeadzone / distance;
+    const dx = rawX * gain;
+    const dy = rawY * gain;
+    anchor = { x: anchor.x + dx, y: anchor.y + dy };
+    return { gesture: "pinch-pan", data: { dx, dy, inertia: false } };
+  },
 
-    const dx = (center.x - prevCenter.x);
-    const dy = (center.y - prevCenter.y);
-    prevCenter = center;
-
-    // Deadzone — ignore sub-pixel jitter from model noise
-    if (Math.abs(dx) < cfg.panMoveDeadzone && Math.abs(dy) < cfg.panMoveDeadzone) {
-      return null;
-    }
-
-    // Update smoothed velocity for inertia
-    velocity.vx = velocity.vx * (1 - cfg.panSmoothing) + dx * cfg.panSmoothing;
-    velocity.vy = velocity.vy * (1 - cfg.panSmoothing) + dy * cfg.panSmoothing;
-
-    return {
-      gesture: "pinch-pan",
-      data: { dx, dy, inertia: false },
-    };
+  animate(now) {
+    if (coastStart === null) return null;
+    if (previousTime === null || now - previousTime > 150) { clearMotion(); return null; }
+    return coast(now, 0);
   },
 
   apply(detection, viewState, config): ViewState {
-    const { dx, dy, inertia, vx, vy } = detection.data as {
-      dx?: number;
-      dy?: number;
-      inertia: boolean;
-      vx?: number;
-      vy?: number;
+    const { dx, dy } = detection.data as { dx: number; dy: number };
+    if (config.panViewState) return config.panViewState(viewState, { dx, dy }, config.panSensitivity);
+    const scale = config.panSensitivity / Math.pow(2, viewState.zoom);
+    return {
+      ...viewState,
+      longitude: viewState.longitude + dx * scale * 180,
+      latitude: Math.max(-85, Math.min(85, viewState.latitude + dy * scale * 90)),
     };
-
-    const zoomFactor = Math.pow(2, viewState.zoom);
-
-    if (inertia && vx !== undefined && vy !== undefined) {
-      const lngDelta = (vx * 180) / zoomFactor;
-      const latDelta = (vy * 90) / zoomFactor;
-      return {
-        ...viewState,
-        longitude: viewState.longitude + lngDelta,
-        latitude: Math.max(-85, Math.min(85, viewState.latitude + latDelta)),
-      };
-    }
-
-    if (dx !== undefined && dy !== undefined) {
-      const scaledDx = dx * config.panSensitivity;
-      const scaledDy = dy * config.panSensitivity;
-      const lngDelta = (scaledDx * 180) / zoomFactor;
-      const latDelta = (scaledDy * 90) / zoomFactor;
-
-      return {
-        ...viewState,
-        longitude: viewState.longitude + lngDelta,
-        latitude: Math.max(-85, Math.min(85, viewState.latitude + latDelta)),
-      };
-    }
-
-    return viewState;
   },
 
   reset() {
-    prevCenter = null;
-    velocity = { vx: 0, vy: 0 };
-    inertiaActive = false;
-    wasPanning = false;
-    pinchStartTimes[0] = null;
-    pinchStartTimes[1] = null;
+    clearMotion();
+    previousTime = null;
+    pinchStartTimes.fill(null);
   },
 };

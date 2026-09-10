@@ -13,6 +13,9 @@ import { gestureConfig as cfg } from "../config";
 // ── Internal state ──
 
 let prevDistance: number | null = null;
+let filteredDistance: number | null = null;
+let sampleDistance: number | null = null;
+let previousTime: number | null = null;
 
 const pinchStartTimes: (number | null)[] = [null, null];
 
@@ -53,16 +56,21 @@ export const pinchZoom: GestureHandler = {
   detect(frame: ThorFrame): GestureDetection | null {
     const { hands, handConfidences } = frame;
     if (hands.length < 2) {
-      prevDistance = null;
+      this.reset?.();
       return null;
     }
 
     const now = frame.timestamp;
+    if (previousTime !== null && (now - previousTime > 200 || now < previousTime)) this.reset?.();
+    const dt = previousTime === null ? 33 : Math.max(1, now - previousTime);
+    previousTime = now;
     const h1Confirmed = confirmPinch(0, hands[0], handConfidences[0] ?? 0, now);
     const h2Confirmed = confirmPinch(1, hands[1], handConfidences[1] ?? 0, now);
 
     if (!h1Confirmed || !h2Confirmed) {
       prevDistance = null;
+      filteredDistance = null;
+      sampleDistance = null;
       return null;
     }
 
@@ -75,38 +83,42 @@ export const pinchZoom: GestureHandler = {
 
     const dx = center2.x - center1.x;
     const dy = center2.y - center1.y;
-    const currentDistance = Math.sqrt(dx * dx + dy * dy);
+    const currentDistance = Math.hypot(dx, dy);
+    if (currentDistance < 0.08) { prevDistance = null; filteredDistance = null; sampleDistance = null; return null; }
 
-    if (prevDistance === null) {
+    if (prevDistance === null || filteredDistance === null || sampleDistance === null ||
+      Math.abs(Math.log2(currentDistance / sampleDistance)) > 0.5) {
       prevDistance = currentDistance;
+      filteredDistance = currentDistance;
+      sampleDistance = currentDistance;
       return null; // first frame
     }
-
-    const distanceDelta = currentDistance - prevDistance;
-    prevDistance = currentDistance;
+    sampleDistance = currentDistance;
+    filteredDistance += (currentDistance - filteredDistance) * (1 - Math.exp(-dt / 30));
+    const delta = Math.log2(filteredDistance / prevDistance);
+    if (Math.abs(delta) <= cfg.zoomDeadzone) return null;
+    const zoomDelta = delta - Math.sign(delta) * cfg.zoomDeadzone;
+    prevDistance *= Math.pow(2, zoomDelta);
 
     return {
       gesture: "pinch-zoom",
-      data: { distanceDelta },
+      data: { zoomDelta },
     };
   },
 
   apply(detection, viewState, config): ViewState {
-    const { distanceDelta } = detection.data as { distanceDelta: number };
-
-    if (Math.abs(distanceDelta) < config.zoomDeadzone) {
-      return viewState;
-    }
-
-    const zoomDelta = distanceDelta * config.zoomSensitivity;
+    const zoomDelta = (detection.data.zoomDelta as number) * config.zoomSensitivity;
     return {
       ...viewState,
-      zoom: Math.max(0, Math.min(22, viewState.zoom + zoomDelta)),
+      zoom: Math.max(config.minZoom ?? 0, Math.min(22, viewState.zoom + zoomDelta)),
     };
   },
 
   reset() {
     prevDistance = null;
+    filteredDistance = null;
+    sampleDistance = null;
+    previousTime = null;
     pinchStartTimes[0] = null;
     pinchStartTimes[1] = null;
   },
