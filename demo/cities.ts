@@ -26,4 +26,3 @@ export const CITIES: City[] = [
   { name: "Seoul", coordinates: [126.978, 37.5665], population: 9776 },
   { name: "Cape Town", coordinates: [18.4241, -33.9249], population: 4618 },
 ];
-
